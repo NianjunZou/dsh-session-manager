@@ -74,11 +74,11 @@ window.__ModuleLoader__.load({
       .dsm-session-row{display:flex;align-items:center;gap:6px;box-sizing:border-box;min-width:0;width:100%;min-height:32px;padding:0 8px 0 calc(8px + var(--dsh-workspace-indent,0px));border-radius:8px;color:var(--dsw-alias-label-primary,inherit);cursor:pointer}
       .dsm-session-row:hover,.dsm-current{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
       .dsm-title{display:block;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
-      .dsm-archived{opacity:.6}.dsm-dot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#888);flex:none}
+      .dsm-archived{opacity:.6}.dsm-dot{width:7px;height:7px;border-radius:50%;background:transparent;box-shadow:none;flex:none}
       .dsm-dot-running{background:var(--dsw-alias-blue,#5b9cff)}.dsm-dot-pending{background:var(--dsw-alias-orange,#e0a33b)}.dsm-dot-done{background:var(--dsw-alias-green,#59b37b)}
        .dsm-status-label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-       .dsm-unread .dsm-title{font-weight:700}.dsm-unread .dsm-dot{box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-blue,#5b9cff) 22%,transparent)}
-      .dsm-unread-mark{display:inline-flex;flex:none;white-space:nowrap;align-items:center;padding:1px 4px;border-radius:4px;color:var(--dsw-alias-blue,#5b9cff);font-size:10px;font-weight:600}.dsm-unread-mark[hidden]{display:none}
+       .dsm-unread .dsm-title{font-weight:700}.dsm-unread .dsm-dot{box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-green,#59b37b) 22%,transparent)}
+      .dsm-unread-mark{display:inline-flex;flex:none;white-space:nowrap;align-items:center;padding:1px 4px;border-radius:4px;color:var(--dsw-alias-green,#59b37b);font-size:10px;font-weight:600}.dsm-unread-mark[hidden]{display:none}
       .dsm-time{display:block;flex:0 0 4.5em;width:4.5em;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary,#888);font-size:11px}.dsm-pin{display:inline-flex;flex:none}.dsm-pin[hidden]{display:none}
       .dsm-more{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:24px;min-height:24px;height:24px;opacity:0;pointer-events:none;flex:0 0 24px;border:0;background:transparent;color:inherit;border-radius:5px;padding:0;cursor:pointer}
       .dsm-session-row:hover .dsm-more,.dsm-session-row:focus-within .dsm-more{opacity:1;pointer-events:auto}
