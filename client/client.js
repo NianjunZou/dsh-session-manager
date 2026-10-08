@@ -13,6 +13,54 @@ window.__ModuleLoader__.load({
     const NATIVE_ROW = '[data-row-key^="session:"]';
     const NATIVE_OVERFLOW = '[data-row-key^="overflow:"]';
     const OWNED = '[data-dsm-owned]';
+    // Single table for every user-facing literal. Values are byte-identical to
+    // the inlined literals they replace, so the rendered UI does not change.
+    const STRINGS = {
+      workspaceSectionNative: "会话",
+      workspaceSectionLabel: "工作区",
+      projectSessions: "项目会话",
+      pinnedSectionTitle: "置顶会话",
+      statusAwaitingApproval: "等待批准",
+      statusAwaitingPlanReview: "等待计划确认",
+      statusAwaitingAnswer: "等待回答",
+      statusRunning: "正在执行",
+      statusDoneUnread: "已完成，未读",
+      statusIdle: "空闲",
+      unreadMark: "未读",
+      pinnedTitle: "已固定",
+      actionPin: "固定会话",
+      actionUnpin: "取消固定",
+      actionRename: "重命名",
+      actionFork: "分叉会话",
+      actionArchive: "归档会话",
+      actionUnarchive: "取消归档",
+      actionCopySessionId: "复制 Session ID",
+      actionCopyWorkingDirectory: "复制工作目录",
+      moreLabel: "会话操作",
+      moreGlyph: "⋯",
+      sectionChevron: "▾",
+      rowAriaSeparator: "，",
+      dialogRenameTitle: "重命名会话",
+      dialogNameLabel: "会话名称",
+      dialogCancel: "取消",
+      dialogSave: "保存",
+      dialogClose: "关闭",
+      noticeSessionActive: "会话仍在运行，请先停止活动再归档。",
+      noticeActionFailed: "会话操作失败：",
+      errorServiceMissing: "宿主未提供 ",
+      errorClipboardWrite: "无法写入剪贴板",
+      errorRenameServiceMissing: "宿主未提供会话重命名服务",
+      errorRenameFailed: "重命名失败",
+      errorWorkingDirectoryMissing: "宿主未提供会话工作目录",
+      timeJustNow: "刚刚",
+      timeMinutes: " 分钟",
+      timeHours: " 小时",
+      timeDays: " 天",
+      timeWeeks: " 周",
+      timeMonths: " 月",
+      timeYears: " 年",
+      nativePinLabels: ["置顶会话", "取消置顶", "Pin", "Unpin", "Pin session", "Unpin session"],
+    };
     const PIN_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 17v5M8 2h8v4h-1v5l4 4v2H5v-2l4-4V6H8z"/></svg>';
     const css = `
       .dsm-session-holder{display:flex;flex-direction:column;min-width:0}
@@ -74,12 +122,12 @@ window.__ModuleLoader__.load({
       };
     }
     function statusLabel(status) {
-      if (status.pending === "approval") return "等待批准";
-      if (status.pending === "plan-review") return "等待计划确认";
-      if (status.pending === "question") return "等待回答";
-      if (status.running) return "正在执行";
-      if (status.unread) return "已完成，未读";
-      return "空闲";
+      if (status.pending === "approval") return STRINGS.statusAwaitingApproval;
+      if (status.pending === "plan-review") return STRINGS.statusAwaitingPlanReview;
+      if (status.pending === "question") return STRINGS.statusAwaitingAnswer;
+      if (status.running) return STRINGS.statusRunning;
+      if (status.unread) return STRINGS.statusDoneUnread;
+      return STRINGS.statusIdle;
     }
     function currentId() {
       const selection = snapshot(uiWorkspace?.selection);
@@ -115,12 +163,12 @@ window.__ModuleLoader__.load({
     function normalizeWorkspaceSectionLabel() {
       const slot = document.querySelector(SLOT);
       const label = [...(slot?.querySelectorAll('[class*="sectionLabel"], [data-section-label]') || [])]
-        .find(node => String(node.textContent || "").trim() === "会话");
+        .find(node => String(node.textContent || "").trim() === STRINGS.workspaceSectionNative);
       if (!label) return;
       if (!state.nativeSectionLabel || state.nativeSectionLabel.node !== label) {
-        state.nativeSectionLabel = { node: label, html: label.innerHTML, pluginHtml: "工作区" };
+        state.nativeSectionLabel = { node: label, html: label.innerHTML, pluginHtml: STRINGS.workspaceSectionLabel };
       }
-      if (String(label.textContent || "").trim() !== "工作区") label.textContent = "工作区";
+      if (String(label.textContent || "").trim() !== STRINGS.workspaceSectionLabel) label.textContent = STRINGS.workspaceSectionLabel;
     }
     function restoreWorkspaceSectionLabel() {
       const previous = state.nativeSectionLabel;
@@ -144,7 +192,7 @@ window.__ModuleLoader__.load({
         header = owned("div", "dsm-project-header");
         header.setAttribute("role", "heading");
         header.setAttribute("aria-level", "2");
-        header.textContent = "项目会话";
+        header.textContent = STRINGS.projectSessions;
       }
       state.projectHeader = header;
       if (header.parentElement !== tree || header.nextElementSibling !== firstGroup) tree.insertBefore(header, firstGroup);
@@ -191,7 +239,7 @@ window.__ModuleLoader__.load({
       for (const button of slot.querySelectorAll("button[aria-label]")) {
         if (button.closest(OWNED)) continue;
         const label = String(button.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
-        if (!["置顶会话", "取消置顶", "Pin", "Unpin", "Pin session", "Unpin session"].includes(label)) continue;
+        if (!STRINGS.nativePinLabels.includes(label)) continue;
         if (!state.hiddenPins.has(button)) state.hiddenPins.set(button, { display: button.style.getPropertyValue("display"), priority: button.style.getPropertyPriority("display") });
         button.classList.add("dsm-native-hidden");
       }
@@ -212,10 +260,10 @@ window.__ModuleLoader__.load({
       const notice = owned("div", "dsm-notice");
       notice.setAttribute("role", "alert");
       const active = error?.rpcError?.code === "workspace/session-active";
-      notice.textContent = active ? "会话仍在运行，请先停止活动再归档。" : `会话操作失败：${error?.message || String(error)}`;
+      notice.textContent = active ? STRINGS.noticeSessionActive : `${STRINGS.noticeActionFailed}${error?.message || String(error)}`;
       const dismiss = document.createElement("button");
       dismiss.type = "button";
-      dismiss.textContent = "关闭";
+      dismiss.textContent = STRINGS.dialogClose;
       dismiss.addEventListener("click", () => { notice.remove(); if (state.notice === notice) state.notice = null; });
       notice.appendChild(dismiss);
       (document.querySelector(SLOT) || document.body).appendChild(notice);
@@ -226,7 +274,7 @@ window.__ModuleLoader__.load({
       catch (error) { reportError(error); return false; }
     }
     async function service(name, ...args) {
-      if (typeof uiWorkspace?.[name] !== "function") throw new Error(`宿主未提供 ${name}`);
+      if (typeof uiWorkspace?.[name] !== "function") throw new Error(`${STRINGS.errorServiceMissing}${name}`);
       const result = await uiWorkspace[name](...args);
       if (result?.ok === false) throw new Error(result.error?.message || `${name} failed`);
       return result;
@@ -240,17 +288,17 @@ window.__ModuleLoader__.load({
       area.style.cssText = "position:fixed;opacity:0";
       document.body.appendChild(area);
       area.select();
-      try { if (!document.execCommand("copy")) throw new Error("无法写入剪贴板"); }
+      try { if (!document.execCommand("copy")) throw new Error(STRINGS.errorClipboardWrite); }
       finally { area.remove(); }
     }
     function closeDialog() { state.dialog?.remove(); state.dialog = null; }
     function requestRename(id) {
       closeDialog();
       const dialog = owned("dialog", "dsm-dialog");
-      dialog.setAttribute("aria-label", "重命名会话");
+      dialog.setAttribute("aria-label", STRINGS.dialogRenameTitle);
       const form = document.createElement("form");
       const label = document.createElement("label");
-      label.textContent = "会话名称";
+      label.textContent = STRINGS.dialogNameLabel;
       const input = document.createElement("input");
       input.value = titleOf(sessionSnapshot()?.byId?.[id], id);
       input.required = true;
@@ -258,10 +306,10 @@ window.__ModuleLoader__.load({
       const actions = document.createElement("div");
       actions.className = "dsm-dialog-actions";
       const cancel = document.createElement("button");
-      cancel.type = "button"; cancel.textContent = "取消";
+      cancel.type = "button"; cancel.textContent = STRINGS.dialogCancel;
       cancel.addEventListener("click", closeDialog);
       const save = document.createElement("button");
-      save.type = "submit"; save.textContent = "保存";
+      save.type = "submit"; save.textContent = STRINGS.dialogSave;
       actions.append(cancel, save);
       form.append(label, actions);
       form.addEventListener("submit", async event => {
@@ -270,9 +318,9 @@ window.__ModuleLoader__.load({
         if (!title || save.disabled) return;
         save.disabled = true;
         const ok = await call(async () => {
-          if (typeof sessions?.using !== "function") throw new Error("宿主未提供会话重命名服务");
+          if (typeof sessions?.using !== "function") throw new Error(STRINGS.errorRenameServiceMissing);
           const result = await sessions.using(id, { source: "workspaceOperation" }, reference => reference.binding.session.rename(title));
-          if (result?.ok === false) throw new Error(result.error?.message || "重命名失败");
+          if (result?.ok === false) throw new Error(result.error?.message || STRINGS.errorRenameFailed);
         });
         if (ok && state.dialog === dialog) closeDialog();
         save.disabled = false;
@@ -290,7 +338,7 @@ window.__ModuleLoader__.load({
         if (kind === "copy") { await copyText(id); return; }
         if (kind === "copyCwd") {
           const cwd = sessionSnapshot()?.byId?.[id]?.cwd;
-          if (!cwd) throw new Error("宿主未提供会话工作目录");
+          if (!cwd) throw new Error(STRINGS.errorWorkingDirectoryMissing);
           await copyText(cwd); return;
         }
         const methods = { pin: "pinSession", unpin: "unpinSession", fork: "forkSession", archive: "archiveSession", unarchive: "unarchiveSession" };
@@ -311,11 +359,11 @@ window.__ModuleLoader__.load({
       menu.setAttribute("role", "menu");
       state.menu = menu; state.menuAnchor = anchor; state.menuSession = id;
       const items = [
-        [isPinned(id) ? "取消固定" : "固定会话", isPinned(id) ? "unpin" : "pin"],
-        ["重命名", "rename"], ["分叉会话", "fork"],
-        [isArchived(id) ? "取消归档" : "归档会话", isArchived(id) ? "unarchive" : "archive"],
-        ["复制 Session ID", "copy"],
-         ...(sessionSnapshot()?.byId?.[id]?.cwd ? [["复制工作目录", "copyCwd"]] : []),
+        [isPinned(id) ? STRINGS.actionUnpin : STRINGS.actionPin, isPinned(id) ? "unpin" : "pin"],
+        [STRINGS.actionRename, "rename"], [STRINGS.actionFork, "fork"],
+        [isArchived(id) ? STRINGS.actionUnarchive : STRINGS.actionArchive, isArchived(id) ? "unarchive" : "archive"],
+        [STRINGS.actionCopySessionId, "copy"],
+         ...(sessionSnapshot()?.byId?.[id]?.cwd ? [[STRINGS.actionCopyWorkingDirectory, "copyCwd"]] : []),
       ];
       for (const [label, kind] of items) {
         const button = document.createElement("button");
@@ -345,14 +393,14 @@ window.__ModuleLoader__.load({
     function relativeTime(ts) {
       if (!Number.isFinite(ts) || ts <= 0) return "";
       const minutes = Math.max(0, Math.floor((Date.now() - ts) / 60000));
-      if (minutes < 1) return "刚刚";
-      if (minutes < 60) return `${minutes} 分钟`;
-      if (minutes < 1440) return `${Math.floor(minutes / 60)} 小时`;
+      if (minutes < 1) return STRINGS.timeJustNow;
+      if (minutes < 60) return `${minutes}${STRINGS.timeMinutes}`;
+      if (minutes < 1440) return `${Math.floor(minutes / 60)}${STRINGS.timeHours}`;
       const days = Math.floor(minutes / 1440);
-      if (days < 7) return `${days} 天`;
-      if (days < 30) return `${Math.floor(days / 7)} 周`;
-      if (days < 365) return `${Math.floor(days / 30)} 月`;
-      return `${Math.floor(days / 365)} 年`;
+      if (days < 7) return `${days}${STRINGS.timeDays}`;
+      if (days < 30) return `${Math.floor(days / 7)}${STRINGS.timeWeeks}`;
+      if (days < 365) return `${Math.floor(days / 30)}${STRINGS.timeMonths}`;
+      return `${Math.floor(days / 365)}${STRINGS.timeYears}`;
     }
     function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
     function makeRow(id) {
@@ -364,7 +412,7 @@ window.__ModuleLoader__.load({
       for (const name of ["dot", "title", "unread", "pin", "time"]) {
         const span = document.createElement("span"); span.className = `dsm-${name}`;
         if (name === "pin") span.innerHTML = PIN_SVG;
-        if (name === "unread") { span.textContent = "未读"; span.className = "dsm-unread-mark"; span.hidden = true; }
+        if (name === "unread") { span.textContent = STRINGS.unreadMark; span.className = "dsm-unread-mark"; span.hidden = true; }
         if (name === "dot") span.setAttribute("aria-hidden", "true");
         row.appendChild(span);
       }
@@ -372,8 +420,8 @@ window.__ModuleLoader__.load({
       status.className = "dsm-status-label";
       row.appendChild(status);
       const more = document.createElement("button");
-      more.type = "button"; more.className = "dsm-more"; more.textContent = "⋯";
-      more.setAttribute("aria-label", "会话操作"); more.setAttribute("aria-haspopup", "menu");
+      more.type = "button"; more.className = "dsm-more"; more.textContent = STRINGS.moreGlyph;
+      more.setAttribute("aria-label", STRINGS.moreLabel); more.setAttribute("aria-haspopup", "menu");
       more.addEventListener("click", event => { event.stopPropagation(); menuFor(id, more); });
       row.appendChild(more);
       row.addEventListener("click", event => { event.stopPropagation(); void call(() => service("openSession", id)); });
@@ -390,7 +438,7 @@ window.__ModuleLoader__.load({
       row.classList.toggle("dsm-current", current); row.classList.toggle("dsm-archived", isArchived(id)); row.classList.toggle("dsm-unread", status.unread);
       row.dataset.dsmStatus = primary;
       row.setAttribute("aria-selected", String(current));
-      row.setAttribute("aria-label", `${titleOf(summary, id)}，${statusLabel(status)}`);
+      row.setAttribute("aria-label", `${titleOf(summary, id)}${STRINGS.rowAriaSeparator}${statusLabel(status)}`);
       const title = row.querySelector(".dsm-title");
       const fullTitle = titleOf(summary, id);
       setText(title, fullTitle);
@@ -405,7 +453,7 @@ window.__ModuleLoader__.load({
       const statusNode = row.querySelector(".dsm-status-label");
       setText(statusNode, statusLabel(status));
       const pin = row.querySelector(".dsm-pin");
-      pin.hidden = !isPinned(id); pin.title = "已固定";
+      pin.hidden = !isPinned(id); pin.title = STRINGS.pinnedTitle;
     }
     function makePinnedSection(tree) {
       let section = tree.querySelector(":scope > .dsm-pinned-section");
@@ -414,9 +462,9 @@ window.__ModuleLoader__.load({
       const header = owned("button", "dsm-pinned-header");
       header.type = "button";
       header.setAttribute("aria-controls", "dsm-pinned-holder");
-      const label = document.createElement("span"); label.className = "dsm-pinned-label"; label.textContent = "置顶会话";
+      const label = document.createElement("span"); label.className = "dsm-pinned-label"; label.textContent = STRINGS.pinnedSectionTitle;
       const count = document.createElement("span"); count.className = "dsm-pinned-count";
-      const chevron = document.createElement("span"); chevron.className = "dsm-pinned-chevron"; chevron.textContent = "▾";
+      const chevron = document.createElement("span"); chevron.className = "dsm-pinned-chevron"; chevron.textContent = STRINGS.sectionChevron;
       header.append(label, count, chevron);
       const holder = owned("div", "dsm-pinned-holder"); holder.id = "dsm-pinned-holder";
       header.addEventListener("click", () => {

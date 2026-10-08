@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 - 2026-10-08
+
+- Documented the supported install channel (a local clone referenced from the DSH profile via `link:` / `file:` dependencies; not published to npm or dshmarket) and added a table of contents to `README.md` and `README_EN.md`.
+- Centralized user-facing literals in `client/client.js` into a single `const STRINGS` table. Values are byte-identical to the previously inlined literals, so the rendered UI is unchanged.
+- Added `test/a11y.test.js`: static regression assertions for the accessibility roles/aria markers used by the client (`menu`, `menuitem`, `treeitem`, `heading`, `alert`, `[role="tree"]`, `aria-selected`, `aria-expanded`, `aria-hidden`, and the visually hidden status label).
+- Added an ESLint flat config (`eslint.config.js`) with a `lint` script, `eslint` / `@eslint/js` dev dependencies, and a `Lint` step in CI.
+
 ## 0.1.1 - 2026-10-08
 
 - Fixed `dsh.client.inject` in the plugin manifest to declare the real DSH client-module packages that provide the services the client uses (`@deepseek-ai/dsh-api-session-controller`, `@deepseek-ai/dsh-api-workspace-controller`, `@deepseek-ai/dsh-client-ui-session`, `@deepseek-ai/dsh-client-ui-workspace`, `@deepseek-ai/dsh-cordis-client-runner`), replacing the non-existent `@deepseek-ai/dsh-client-runtime` placeholder. Verified against DSH `0.2.0-rc.2` source (service providers) and a published reference plugin.

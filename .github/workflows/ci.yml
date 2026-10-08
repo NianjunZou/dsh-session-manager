@@ -36,6 +36,8 @@ jobs:
       - name: Install
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Lint
+        run: npm run lint
       - name: Static + contract lane
         run: |
           node --check client/client.js

@@ -9,6 +9,18 @@ A local DSH plugin that gives the left workspace a Codex-style session list.
 
 本插件是一个**可关闭的左侧 UI 覆盖层**，不会成为 DSH 会话数据的第二真相源：会话、工作区归属、置顶、归档、当前选择等状态始终由 DSH 宿主服务读写，插件只做投影与宿主服务调用。详见 [`PLUGIN-CONTRACT.md`](PLUGIN-CONTRACT.md)。
 
+## 目录
+
+- [功能](#功能)
+- [兼容性](#兼容性)
+- [前置条件](#前置条件)
+- [范围与限制](#范围与限制)
+- [安装](#安装)
+- [开发与验证](#开发与验证)
+- [文档](#文档)
+- [边界](#边界)
+- [License](#license)
+
 ## 功能
 
 - 保留原生 workspace 分组、展开/折叠和工作区级操作。
@@ -36,6 +48,8 @@ A local DSH plugin that gives the left workspace a Codex-style session list.
 ## 安装
 
 把本仓库放到任意本地目录，在 DSH desktop profile 的 `dependencies` 与 `dsh.profile.bundles` 中加入 `dsh-session-manager`，重启 DSH。完整步骤见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+
+当前受支持的安装渠道只有 git clone 本仓库后，在 DSH profile 中以 `link:` / `file:` 依赖（或直接指向本地目录）引入；本插件尚未发布到 npm 或 dshmarket。
 
 ## 开发与验证
 

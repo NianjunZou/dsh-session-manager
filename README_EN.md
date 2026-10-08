@@ -13,6 +13,16 @@ truth for DSH session data: sessions, workspace membership, pinned/archived stat
 current selection are always read from and written through host services. See
 [`PLUGIN-CONTRACT.md`](PLUGIN-CONTRACT.md).
 
+## Contents
+
+- [Features](#features)
+- [Compatibility](#compatibility)
+- [Prerequisites](#prerequisites)
+- [Install](#install)
+- [Develop & verify](#develop--verify)
+- [Scope & limitations](#scope--limitations)
+- [License](#license)
+
 ## Features
 
 - Keeps native workspace grouping, expand/collapse and workspace-level actions.
@@ -38,6 +48,10 @@ Other DSH versions may need adjustment if the client DOM/service contract change
 Clone this repo anywhere, then add `dsh-session-manager` to your DSH desktop profile's
 `dependencies` and `dsh.profile.bundles`, and restart DSH. Full steps in
 [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+The only supported install channel today is a local clone of this repo referenced from the
+DSH profile as a `link:` / `file:` dependency (or a plain local directory). The plugin is not
+published to npm or dshmarket yet.
 
 ## Develop & verify
 
