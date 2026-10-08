@@ -45,8 +45,9 @@ Other DSH versions may need adjustment if the client DOM/service contract change
 
 ## Install
 
-Clone this repo anywhere, then add `dsh-session-manager` to your DSH desktop profile's
-`dependencies` and `dsh.profile.bundles`, and restart DSH. Full steps in
+Install from npm: `dsh plugin --profile <profile> add @pianner/dsh-session-manager`,
+add `@pianner/dsh-session-manager` to your DSH desktop profile's `dsh.profile.bundles`,
+and restart DSH. You can also clone this repo for a local dev install. Full steps in
 [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 The only supported install channel today is a local clone of this repo referenced from the

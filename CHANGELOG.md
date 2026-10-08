@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4 - 2026-10-08
+
+- Scoped the package to `@pianner/dsh-session-manager` for its first npm release (the unscoped `dsh-session-manager` name is taken by an unrelated package). Updated the coupled identifiers accordingly: the client module id, the `cordis.patch.yml` bundle `name`, the package-name test assertion, and the install docs. No behavior change.
+
 ## 0.1.3 - 2026-10-08
 
 - Packaging prep for npm: added `publishConfig` (public access, official registry) and trimmed the published `files` to runtime + docs (dropped `test/` and `scripts/` from the tarball; the working tree and local dev scripts are unchanged).

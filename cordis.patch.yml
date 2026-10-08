@@ -1,5 +1,5 @@
 # Client-only DSH bundle registration. Behavior lives in client/client.js.
 - insert:
     - id: dsh-session-manager
-      name: 'dsh-session-manager'
+      name: '@pianner/dsh-session-manager'
       config: {}

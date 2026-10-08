@@ -5,7 +5,7 @@
  * Scope: the left workspace session area only. See PLUGIN-CONTRACT.md. License: MIT.
  */
 window.__ModuleLoader__.load({
-  id: "dsh-session-manager",
+  id: "@pianner/dsh-session-manager",
   factory: () => {
     const inject = ["sessions", "workspaces", "timer", "uiWorkspace", "uiSession"];
     const SLOT = '[data-slot="sidebar.workspaces"]';

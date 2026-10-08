@@ -6,7 +6,7 @@ const code = readFileSync(new URL("../client/client.js", import.meta.url), "utf8
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 test("package declares the independent local session manager", () => {
-  assert.equal(pkg.name, "dsh-session-manager");
+  assert.equal(pkg.name, "@pianner/dsh-session-manager");
   assert.equal(pkg.exports["./client"], "./client/client.js");
   assert.equal(pkg.dsh.client.platform, "web");
 });
