@@ -1,0 +1,17 @@
+# Local dependencies and generated test output
+node_modules/
+coverage/
+test-results/
+playwright-report/
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Logs and transient files
+*.log
+*.tmp
+
+# Packaged tarball (build artifact)
+*.tgz

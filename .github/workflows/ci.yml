@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  leak-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan tracked files for secrets / absolute home paths
+        env:
+          # Optional org/machine-specific denylist (pipe-separated ERE), kept out of the repo.
+          # Set it as a repository Actions secret named LEAK_EXTRA; empty if unset.
+          LEAK_EXTRA: ${{ secrets.LEAK_EXTRA }}
+        run: |
+          STRICT='(/Users/|/home/[a-z])|-----BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20}|gho_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9_]{20}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10}|(password|passwd|secret|api[_-]?key|access[_-]?token|private[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'"']?[^"'"'"'[:space:]]'
+          fail=0
+          for f in $(git ls-files | grep -vE 'package-lock\.json|pnpm-lock\.yaml|yarn\.lock|scripts/git-hooks/|\.github/workflows/'); do
+            git show ":$f" | grep -Iq . || continue
+            if git show ":$f" | grep -nE "$STRICT"; then echo "::error file=$f::possible secret / absolute home path"; fail=1; fi
+            if [ -n "${LEAK_EXTRA:-}" ] && git show ":$f" | grep -nEi "$LEAK_EXTRA"; then echo "::error file=$f::matches org denylist"; fail=1; fi
+          done
+          exit $fail
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Static + contract lane
+        run: |
+          node --check client/client.js
+          node --test test/plugin.test.js
+          node scripts/check-plugin-contract.mjs .
+      - name: Browser regression lane
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser

@@ -1,0 +1,52 @@
+{
+  "name": "dsh-session-manager",
+  "version": "0.1.0",
+  "description": "Codex-style left session manager for DSH workspaces.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "client",
+    "scripts",
+    "test",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "PLUGIN-CONTRACT.md",
+    "LICENSE",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "test:browser": "node --test test/browser.test.js",
+    "verify:contract": "node scripts/check-plugin-contract.mjs .",
+    "verify": "node --check client/client.js && npm test && npm run verify:contract"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "sessions",
+    "codex"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "devDependencies": {
+    "playwright": "^1.56.1"
+  }
+}
