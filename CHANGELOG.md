@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 - 2026-10-08
 
 - Implemented P0 Codex-style pinned section with host-order projection, pin de-duplication from workspace rows, unpin restoration, and independent collapse state.
 - Added `uiSession.sessionStatus` projection for pending interaction, running, and completion-unread states with distinct labels/markers.

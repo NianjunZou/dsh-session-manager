@@ -16,9 +16,11 @@
     "test",
     "docs",
     "README.md",
+    "README_EN.md",
     "CHANGELOG.md",
     "PLUGIN-CONTRACT.md",
     "LICENSE",
+    "icon.svg",
     "cordis.patch.yml"
   ],
   "scripts": {
@@ -34,6 +36,18 @@
     "codex"
   ],
   "license": "MIT",
+  "author": "nianjunzou",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NianjunZou/dsh-session-manager.git"
+  },
+  "homepage": "https://github.com/NianjunZou/dsh-session-manager#readme",
+  "bugs": {
+    "url": "https://github.com/NianjunZou/dsh-session-manager/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dsh": {
     "manifestVersion": 1,
     "bundle": {

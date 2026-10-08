@@ -1,3 +1,9 @@
+/*!
+ * dsh-session-manager — Codex-style left session manager for DSH.
+ * A reversible, left-workspace UI overlay: it projects host state and calls host
+ * services only, and never becomes a second source of truth for DSH session data.
+ * Scope: the left workspace session area only. See PLUGIN-CONTRACT.md. License: MIT.
+ */
 window.__ModuleLoader__.load({
   id: "dsh-session-manager",
   factory: () => {

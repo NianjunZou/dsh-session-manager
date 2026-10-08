@@ -1,5 +1,9 @@
 # dsh-session-manager
 
+[![CI](https://github.com/NianjunZou/dsh-session-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/NianjunZou/dsh-session-manager/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-informational.svg)](LICENSE)
+English: [`README_EN.md`](README_EN.md)
+
 A local DSH plugin that gives the left workspace a Codex-style session list.
 它只接管左侧工作区中的会话行与会话菜单，不修改 DSH/Harness 源码，不接管右侧 sidebar。
 
@@ -12,6 +16,22 @@ A local DSH plugin that gives the left workspace a Codex-style session list.
 - 统一提供固定/取消固定、重命名、分叉、归档/取消归档、复制 Session ID、复制工作目录。
 - 隐藏原生会话行及原生重复置顶入口，避免第三方插件互相覆盖。
 - 独立“置顶会话”区 + “项目会话”分块；运行/等待/完成未读状态区分。
+
+## 兼容性
+
+针对 DSH desktop 的 web client 开发与测试，目标版本线 `0.2.0-rc.2`。其它 DSH 版本可能因客户端 DOM/服务契约变化而需适配。
+
+## 前置条件
+
+- macOS 上的 DSH desktop。
+- Node.js ≥ 20（跑测试用）。
+- 运行 browser 回归（`npm run test:browser`）需要本地 Playwright 浏览器（`npx playwright install chromium`）。
+
+## 范围与限制
+
+- 只接管左侧 `[data-slot="sidebar.workspaces"]` 的会话行与会话菜单；不接管右侧 sidebar，不改 DSH/Harness 源码或 ASAR。
+- 暂不提供：永久删除会话、跨工作区移动、原生“未读”状态的持久化写入——这些在目标 DSH 版本缺少可调用的公开写接口，待其提供后再评估。
+- 卸载与回滚见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
 ## 安装
 
