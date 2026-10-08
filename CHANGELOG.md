@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 - 2026-10-08
+
+- Fixed `dsh.client.inject` in the plugin manifest to declare the real DSH client-module packages that provide the services the client uses (`@deepseek-ai/dsh-api-session-controller`, `@deepseek-ai/dsh-api-workspace-controller`, `@deepseek-ai/dsh-client-ui-session`, `@deepseek-ai/dsh-client-ui-workspace`, `@deepseek-ai/dsh-cordis-client-runner`), replacing the non-existent `@deepseek-ai/dsh-client-runtime` placeholder. Verified against DSH `0.2.0-rc.2` source (service providers) and a published reference plugin.
+
 ## 0.1.0 - 2026-10-08
 
 - Implemented P0 Codex-style pinned section with host-order projection, pin de-duplication from workspace rows, unpin restoration, and independent collapse state.
