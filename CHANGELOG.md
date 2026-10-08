@@ -7,6 +7,7 @@
 - Added `test/a11y.test.js`: static regression assertions for the accessibility roles/aria markers used by the client (`menu`, `menuitem`, `treeitem`, `heading`, `alert`, `[role="tree"]`, `aria-selected`, `aria-expanded`, `aria-hidden`, and the visually hidden status label).
 - Added an ESLint flat config (`eslint.config.js`) with a `lint` script, `eslint` / `@eslint/js` dev dependencies, and a `Lint` step in CI.
 - Idle sessions no longer show a grey status dot: the base `.dsm-dot` is transparent while keeping its 7px placeholder, so only running = blue / pending = amber / done = green remain; the unread emphasis (dot halo and the "unread" badge) moved from blue to green so it can no longer be mistaken for a running session.
+- Indented project-session rows one level under their expanded workspace group so the hierarchy reads more clearly; pinned-section rows stay flat.
 
 ## 0.1.1 - 2026-10-08
 

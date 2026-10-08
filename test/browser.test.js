@@ -520,7 +520,7 @@ test("single-line titles yield to a fixed right-aligned time column at narrow an
     const more = node.querySelector(".dsm-more");
     const r = node.getBoundingClientRect(), t = title.getBoundingClientRect(), d = time.getBoundingClientRect(), m = more.getBoundingClientRect();
     return {
-      id: node.dataset.dsmSessionId, rowWidth: r.width, rowHeight: r.height, rowRight: r.right,
+      id: node.dataset.dsmSessionId, pinned: !!node.closest(".dsm-pinned-holder"), rowWidth: r.width, rowHeight: r.height, rowRight: r.right,
       titleLeft: t.left, titleRight: t.right, titleWidth: t.width, clipped: title.scrollWidth > title.clientWidth,
       titleAlign: getComputedStyle(title).textAlign, whiteSpace: getComputedStyle(title).whiteSpace,
       overflow: getComputedStyle(title).overflow, ellipsis: getComputedStyle(title).textOverflow,
@@ -531,6 +531,11 @@ test("single-line titles yield to a fixed right-aligned time column at narrow an
   for (const width of [240, 320, 500]) {
     await page.locator('[data-slot="sidebar.workspaces"]').evaluate((node, width) => { node.style.width = `${width}px`; }, width);
     const before = await geometry();
+    const pinnedRef = before.find(x => x.pinned) || before[0];
+    const projectRef = before.find(x => !x.pinned) || before[0];
+    if (before.some(x => x.pinned) && before.some(x => !x.pinned)) {
+      assert.ok(projectRef.titleLeft - pinnedRef.titleLeft >= 8, "project sessions are indented under the workspace");
+    }
     for (const item of before) {
       assert.equal(item.rowWidth, width);
       assert.equal(item.rowHeight, 32);
@@ -541,7 +546,7 @@ test("single-line titles yield to a fixed right-aligned time column at narrow an
       assert.equal(item.timeAlign, "right");
       assert.ok(Math.abs(item.timeWidth - 49.5) < 1);
       assert.ok(Math.abs(item.timeRight - before[0].timeRight) < 1);
-      assert.ok(Math.abs(item.titleLeft - before[0].titleLeft) < 1);
+      assert.ok(Math.abs(item.titleLeft - (item.pinned ? pinnedRef : projectRef).titleLeft) < 1);
       assert.ok(item.titleWidth > 0 && item.titleRight < item.timeLeft);
       assert.ok(item.timeFits && item.moreRight <= item.rowRight);
       assert.equal(item.moreWidth, 24);
