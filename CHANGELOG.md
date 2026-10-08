@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 - 2026-10-08
+
+- Packaging prep for npm: added `publishConfig` (public access, official registry) and trimmed the published `files` to runtime + docs (dropped `test/` and `scripts/` from the tarball; the working tree and local dev scripts are unchanged).
+- `docs/DEPLOY.md`: documented the `dsh plugin --profile <profile> add <plugin-dir>` CLI install as the recommended method, alongside the manual profile-edit steps, and noted the plugin is not yet on npm.
+
 ## 0.1.2 - 2026-10-08
 
 - Documented the supported install channel (a local clone referenced from the DSH profile via `link:` / `file:` dependencies; not published to npm or dshmarket) and added a table of contents to `README.md` and `README_EN.md`.

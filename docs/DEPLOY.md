@@ -11,7 +11,19 @@
 - DSH profile：`~/.dsh/profiles/<profile>/`（`<profile>` 为你实际使用的 profile 名，桌面版常见为 `desktop`）。
 - 安装方式用软链，不要把源码复制进 DSH 配置目录；profile 只负责登记与链接。
 
-## 安装步骤
+## 安装（命令行，推荐）
+
+clone 本仓库到 `<plugin-dir>` 后，用 DSH CLI 一行把它装进 profile：
+
+```bash
+dsh plugin --profile <profile> add <plugin-dir>
+```
+
+该命令会在 profile 里登记依赖、生成软链接。随后在 `~/.dsh/profiles/<profile>/package.json` 的 `dsh.profile.bundles` 中加入 `"dsh-session-manager"`（若未自动加入），重启 DSH desktop 即可。
+
+> 本插件尚未发布到 npm；因此用本地 clone（`link:`/`file:`）安装。日后若发布，可直接 `dsh plugin --profile <profile> add <包名>` 从 registry 安装。
+
+## 安装（手动编辑 profile）
 
 在 `~/.dsh/profiles/<profile>/package.json` 中：
 
