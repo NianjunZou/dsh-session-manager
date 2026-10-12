@@ -1,8 +1,15 @@
 # Changelog
 
+## 0.1.5 - 2026-10-12
+
+- Published to npm as **`@pianner/dsh-session-manager`**. The unscoped name `dsh-session-manager` is already taken on npm by an unrelated package, so the package, the client module id and the `cordis.patch.yml` bundle name all moved to the `@pianner` scope; the install docs now lead with `dsh plugin --profile <profile> add @pianner/dsh-session-manager`.
+
+- The session now shows the running (blue) dot while a subagent runs under a waiting main agent: the client re-projects the host `sessions.list` `parentId` / `origin` / `running` state (via `hasRunningDescendant`) so a parent whose own main agent is idle still reads as running while any host-projected descendant runs. No other behavior change.
+- The session now also shows the running (blue) dot while **anything in its session tree is still at work**: a background job owned by the session, a still-running subagent/team member, or a background job owned by one of those subagents. The client reads the host `jobs` rosters (status `running` / `stopping`) and keeps one reference-counted `watchRows()` per session in the tree under each mounted row — including subagent rows, which are filtered out of the rendered list and would otherwise never be watched. `jobs` is an OPTIONAL injection: a DSH build without the job service still loads the plugin and falls back to the main-agent/subagent signal. Watches are read-only (no `observe()`, no output consumption) and released on cleanup.
+
 ## 0.1.4 - 2026-10-08
 
-- Scoped the package to `@pianner/dsh-session-manager` for its first npm release (the unscoped `dsh-session-manager` name is taken by an unrelated package). Updated the coupled identifiers accordingly: the client module id, the `cordis.patch.yml` bundle `name`, the package-name test assertion, and the install docs. No behavior change.
+- Kept the package name unscoped as `dsh-session-manager` across the coupled identifiers (client module id, `cordis.patch.yml` bundle `name`, package-name test assertion) and distributed it directly as a `.tgz` package rather than publishing to npm. No behavior change.
 
 ## 0.1.3 - 2026-10-08
 

@@ -39,6 +39,8 @@ async function mount(t, { nested = false, direct = false, expanded = true, sessi
     const workspaces = store({ phase: "ready", items: workspaceItems, pinnedSessionIds, archivedSessionIds });
     const selection = store({ sessionId: "a" });
     const status = store(new Map(Object.entries(statuses)));
+    const jobsState = store({ rows: {}, observed: {} });
+    const watched = new Set();
     const calls = [];
     const intervals = new Set();
     const disposals = [];
@@ -56,6 +58,7 @@ async function mount(t, { nested = false, direct = false, expanded = true, sessi
       workspaces: { list: workspaces }, uiWorkspace,
       ...(withUiSession ? { uiSession: { sessionStatus: status } } : {}),
       timer: { interval: f => { intervals.add(f); return () => intervals.delete(f); } },
+      jobs: { state: jobsState, watchRows: id => { watched.add(id); return () => watched.delete(id); } },
     };
     window.fixture = {
       services, list, workspaces, selection, status, calls,
@@ -66,8 +69,9 @@ async function mount(t, { nested = false, direct = false, expanded = true, sessi
       tick: () => { for (const f of intervals) f(); },
       setPinned: pinned => workspaces.set({ ...workspaces.getSnapshot(), pinnedSessionIds: pinned }),
       setStatus: next => status.set(new Map(Object.entries(next))),
+      setJobRows: rows => jobsState.set({ rows, observed: {} }),
       cleanup: () => { for (const f of disposals.splice(0).reverse()) f(); },
-      disposals, intervals,
+      disposals, intervals, jobsState, watched,
     };
     document.querySelector('[data-row-key="workspace:w"]').setAttribute("aria-expanded", String(expanded));
     window.__ModuleLoader__ = { load: ({ factory }) => { window.fixture.plugin = factory(); window.fixture.plugin.apply({ get: name => services[name], effect: fn => disposals.push(fn()) }); } };
@@ -272,6 +276,36 @@ test("native pagination reveals further pages and collapses without changing hos
   assert.deepEqual(await page.evaluate(() => fixture.paginationCalls), ["w", "w", "w"]);
   assert.deepEqual(await page.evaluate(() => fixture.calls), []);
   assert.deepEqual(await page.evaluate(() => fixture.baseline()), baseline);
+});
+
+test("pinned sessions are isolated to the pinned section and never render inside a workspace group", async t => {
+  const pinned = ["a", "page-1", "page-2", "page-3", "page-4", "page-5", "page-6"];
+  const page = await mountPaginated(t, { pinnedSessionIds: pinned });
+  assert.equal(await page.locator(".dsm-pinned-count").textContent(), "7");
+  // Expanded by default: every pinned session has exactly one row, in the pinned holder.
+  assert.equal(await page.locator(".dsm-pinned-holder").isVisible(), true);
+  assert.equal(await page.locator(".dsm-pinned-holder .dsm-session-row").count(), 7);
+  for (const id of pinned) {
+    assert.equal(await page.locator(`.dsm-pinned-holder [data-dsm-session-id="${id}"]`).count(), 1, `pinned ${id}`);
+    // ... and neither the plugin row nor the native row shows up in its workspace group.
+    assert.equal(await page.locator(`[data-group='w'] .dsm-session-holder [data-dsm-session-id="${id}"]`).count(), 0, `workspace row ${id}`);
+    assert.equal(await page.locator(`[data-group='w'] [data-native="${id}"]`).isVisible(), false, `native ${id}`);
+  }
+  // Collapsing hides the list but keeps the section and its count.
+  await page.locator(".dsm-pinned-header").click();
+  assert.equal(await page.locator(".dsm-pinned-holder").isVisible(), false);
+  assert.equal(await page.locator(".dsm-pinned-count").textContent(), "7");
+  assert.equal(await page.locator(".dsm-pinned-holder .dsm-session-row").count(), 7);
+  // Re-expanding restores the visible list.
+  await page.locator(".dsm-pinned-header").click();
+  await page.locator(".dsm-pinned-holder .dsm-session-row").first().waitFor();
+  assert.equal(await page.locator(".dsm-pinned-holder").isVisible(), true);
+  assert.equal(await page.locator(".dsm-pinned-holder .dsm-session-row").count(), 7);
+  // Unpinning puts the session back in its workspace group.
+  await page.evaluate(() => fixture.setPinned(["page-1"]));
+  await page.locator(`[data-group='w'] .dsm-session-holder [data-dsm-session-id="a"]`).first().waitFor();
+  assert.equal(await page.locator(".dsm-pinned-count").textContent(), "1");
+  assert.equal(await page.locator(`[data-group='w'] .dsm-session-holder [data-dsm-session-id="a"]`).count(), 1);
 });
 
 test("pagination stays available when a native control shares the last session wrapper", async t => {
@@ -637,6 +671,104 @@ test("running, pending interaction, and completion unread have distinct preceden
     return { same: document.querySelector('[data-dsm-session-id="b"]') === target, focused: document.activeElement === button, status: target.dataset.dsmStatus };
   });
   assert.deepEqual(identity, { same: true, focused: true, status: "running" });
+});
+
+test("a session shows the running dot while a host-projected subagent runs under it", async t => {
+  const page = await mount(t, { sessionIds: ["a", "b"] });
+  // Baseline: idle session "a" with no own running state and no running child.
+  assert.equal(await row(page, "a").getAttribute("data-dsm-status"), "idle");
+  assert.equal(await row(page, "a").locator(".dsm-dot-running").count(), 0);
+  // Host projects a running subagent child of "a" (origin subagent + parentId + live running).
+  const projected = await page.evaluate(() => {
+    const list = fixture.list.getSnapshot();
+    const byId = { ...list.byId, "a-sub": { id: "a-sub", displayTitle: "Child", origin: "subagent", parentId: "a", running: true, updatedAt: Date.now(), retainedBy: {} } };
+    fixture.list.set({ ...list, byId });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    return { status: target.dataset.dsmStatus, dot: target.querySelectorAll(".dsm-dot-running").length };
+  });
+  assert.deepEqual(projected, { status: "running", dot: 1 });
+  // When the subagent stops, the parent returns to idle without a lingering dot.
+  const settled = await page.evaluate(() => {
+    const list = fixture.list.getSnapshot();
+    fixture.list.set({ ...list, byId: { ...list.byId, "a-sub": { ...list.byId["a-sub"], running: false } } });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    return { status: target.dataset.dsmStatus, dot: target.querySelectorAll(".dsm-dot-running").length };
+  });
+  assert.deepEqual(settled, { status: "idle", dot: 0 });
+});
+
+test("a session shows the running dot while a host-projected background job runs under it", async t => {
+  const page = await mount(t, { sessionIds: ["a", "b"] });
+  // Baseline: "a" idle, no running job.
+  assert.equal(await row(page, "a").getAttribute("data-dsm-status"), "idle");
+  assert.equal(await row(page, "a").locator(".dsm-dot-running").count(), 0);
+  // The plugin watches the job roster of every session with a mounted row.
+  assert.equal(await page.evaluate(() => fixture.watched.has("a")), true);
+  // A session with no mounted row is not watched (bounded cost); it is picked up by
+  // the render pass that mounts its row — e.g. when its workspace group is expanded.
+  const reveal = await page.evaluate(() => {
+    const list = fixture.list.getSnapshot();
+    fixture.list.set({ ...list, ids: [...list.ids, "hidden"], byId: { ...list.byId, hidden: { id: "hidden", displayTitle: "Hidden", origin: "user", updatedAt: 0, retainedBy: {} } } });
+    fixture.tick();
+    const before = { watched: fixture.watched.has("hidden"), rows: document.querySelectorAll('[data-dsm-session-id="hidden"]').length };
+    const workspaces = fixture.workspaces.getSnapshot();
+    fixture.workspaces.set({ ...workspaces, items: workspaces.items.map(item => item.workspaceId === "w" ? { ...item, sessionIds: [...item.sessionIds, "hidden"] } : item) });
+    fixture.tick();
+    return { before, after: { watched: fixture.watched.has("hidden"), rows: document.querySelectorAll('[data-dsm-session-id="hidden"]').length } };
+  });
+  assert.deepEqual(reveal, { before: { watched: false, rows: 0 }, after: { watched: true, rows: 1 } });
+  // Host projects a running background job on "a" (ctx.jobs rows, status "running").
+  const projected = await page.evaluate(() => {
+    fixture.setJobRows({ a: [{ id: "j1", status: "running" }] });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    return { status: target.dataset.dsmStatus, dot: target.querySelectorAll(".dsm-dot-running").length };
+  });
+  assert.deepEqual(projected, { status: "running", dot: 1 });
+  // When the job settles, the session returns to idle with no lingering dot.
+  const settledJob = await page.evaluate(() => {
+    fixture.setJobRows({ a: [{ id: "j1", status: "completed" }] });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    return { status: target.dataset.dsmStatus, dot: target.querySelectorAll(".dsm-dot-running").length };
+  });
+  assert.deepEqual(settledJob, { status: "idle", dot: 0 });
+  // Disabling the plugin releases every job watch — no residual host stream.
+  await page.evaluate(() => fixture.cleanup());
+  assert.equal(await page.evaluate(() => fixture.watched.size), 0);
+});
+
+test("a session shows the running dot while a background job runs under one of its subagents", async t => {
+  const page = await mount(t, { sessionIds: ["a", "b"] });
+  assert.equal(await row(page, "a").getAttribute("data-dsm-status"), "idle");
+  // Host projects an IDLE subagent under "a" (its own agent is not running).
+  const projected = await page.evaluate(() => {
+    const list = fixture.list.getSnapshot();
+    fixture.list.set({ ...list, byId: { ...list.byId, "a-sub": { id: "a-sub", displayTitle: "Child", origin: "subagent", parentId: "a", running: false, updatedAt: Date.now(), retainedBy: {} } } });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    // Subagent rows are filtered out of the list, but their job roster must still be watched.
+    return { status: target.dataset.dsmStatus, watchedSub: fixture.watched.has("a-sub") };
+  });
+  assert.deepEqual(projected, { status: "idle", watchedSub: true });
+  // The subagent's own background job keeps the parent session "executing".
+  const withJob = await page.evaluate(() => {
+    fixture.setJobRows({ "a-sub": [{ id: "j1", status: "running" }] });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    return { status: target.dataset.dsmStatus, dot: target.querySelectorAll(".dsm-dot-running").length };
+  });
+  assert.deepEqual(withJob, { status: "running", dot: 1 });
+  // Job settles -> idle again.
+  const settled = await page.evaluate(() => {
+    fixture.setJobRows({ "a-sub": [{ id: "j1", status: "completed" }] });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    return { status: target.dataset.dsmStatus, dot: target.querySelectorAll(".dsm-dot-running").length };
+  });
+  assert.deepEqual(settled, { status: "idle", dot: 0 });
 });
 
 test("copy working directory uses the host summary without writing host state", async t => {

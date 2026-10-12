@@ -47,9 +47,9 @@ A local DSH plugin that gives the left workspace a Codex-style session list.
 
 ## 安装
 
-从 npm 安装：`dsh plugin --profile <profile> add @pianner/dsh-session-manager`，并在 `dsh.profile.bundles` 中加入 `@pianner/dsh-session-manager`，重启 DSH。也可 clone 本仓库做本地开发安装。完整步骤见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+从 npm 安装：`dsh plugin --profile <profile> add @pianner/dsh-session-manager`，并在 `dsh.profile.bundles` 中加入 `@pianner/dsh-session-manager`，重启 DSH。也可 clone 本仓库（或使用 `.tgz`）做本地开发安装。完整步骤见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
-当前受支持的安装渠道只有 git clone 本仓库后，在 DSH profile 中以 `link:` / `file:` 依赖（或直接指向本地目录）引入；本插件尚未发布到 npm 或 dshmarket。
+已发布到 npm：`@pianner/dsh-session-manager`（`npm i @pianner/dsh-session-manager`）。本地开发仍可用 clone 或 `link:` 依赖引入。
 
 ## 开发与验证
 

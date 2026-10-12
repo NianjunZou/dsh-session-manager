@@ -1,5 +1,5 @@
 /*!
- * dsh-session-manager — Codex-style left session manager for DSH.
+ * @pianner/dsh-session-manager — Codex-style left session manager for DSH.
  * A reversible, left-workspace UI overlay: it projects host state and calls host
  * services only, and never becomes a second source of truth for DSH session data.
  * Scope: the left workspace session area only. See PLUGIN-CONTRACT.md. License: MIT.
@@ -99,8 +99,16 @@ window.__ModuleLoader__.load({
       hidden: new Map(), holders: new Set(), hiddenPins: new Map(), rows: new Map(), pinnedSection: null, pinnedExpanded: true, workspaceTitles: new Map(), projectHeader: null, nativeSectionLabel: null,
       menu: null, menuAnchor: null,
       menuSession: null, menuPointerDown: null, menuKeydown: null, dialog: null, notice: null,
+      jobsWatch: new Map(),
     };
-    let sessions, workspaces, uiWorkspace, uiSession;
+    let sessions, workspaces, uiWorkspace, uiSession, ctxRef;
+    // `jobs` is OPTIONAL: it is deliberately not in the required `inject` list, so a
+    // DSH build without the job service still loads this plugin (native UI intact).
+    // It is looked up lazily on every read so it is picked up whenever it appears.
+    function jobService() {
+      if (!ctxRef) return undefined;
+      return typeof ctxRef.get === "function" ? ctxRef.get("jobs") : ctxRef.jobs;
+    }
     const observation = { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-expanded", "aria-selected", "data-row-key"] };
 
     function owned(tag, className) {
@@ -113,11 +121,58 @@ window.__ModuleLoader__.load({
     function sessionSnapshot() { return snapshot(sessions?.list); }
     function workspaceSnapshot() { return snapshot(workspaces?.list); }
     function statusSnapshot() { return snapshot(uiSession?.sessionStatus) || new Map(); }
+    // A session is "executing" when anything in its own session tree is still at
+    // work: its own main agent, any host-projected descendant (子智能体/团队成员),
+    // or a background job owned by the session or by one of those descendants.
+    // Host summaries carry subagent rows with a live `running` flag and a
+    // `parentId` link, but the host deliberately keeps a subagent's run out of the
+    // parent's sessionStatus (see ui-session reconcileStatus). The plugin therefore
+    // re-projects that same host state here — it never invents a second source of
+    // truth, and it never writes host state.
+    function descendantIds(id) {
+      const byId = sessionSnapshot()?.byId;
+      const found = new Set();
+      if (!byId) return found;
+      for (const row of Object.values(byId)) {
+        if (!row || row.id === id) continue;
+        let cursor = row.parentId, guard = 0;
+        while (cursor && guard++ < 64) {
+          if (cursor === id) { found.add(row.id); break; }
+          cursor = byId[cursor]?.parentId;
+        }
+      }
+      return found;
+    }
+    // The session tree we must mirror jobs for: the session itself plus every
+    // descendant. Subagent rows are filtered out of the rendered list, so their
+    // rosters would otherwise never be watched.
+    function treeIds(id) {
+      const ids = new Set([id]);
+      for (const child of descendantIds(id)) ids.add(child);
+      return ids;
+    }
+    // Any live background job in the tree. `stopping` still counts: the work has
+    // not settled until the job reaches a terminal status.
+    function jobsSnapshot() { return snapshot(jobService()?.state); }
+    function hasRunningJob(id) {
+      const rows = jobsSnapshot()?.rows;
+      if (!rows) return false;
+      for (const member of treeIds(id)) {
+        const jobsOf = rows[member];
+        if (Array.isArray(jobsOf) && jobsOf.some(job => job && (job.status === "running" || job.status === "stopping"))) return true;
+      }
+      return false;
+    }
     function statusOf(id, summary) {
       const status = statusSnapshot().get(id) || {};
       const pending = typeof status.pendingInteraction === "string" ? status.pendingInteraction : status.pendingInteraction?.kind;
+      const ownRunning = status.running === true || status.running === undefined && summary?.running === true;
+      const descendantRunning = [...descendantIds(id)].some(member => {
+        const row = sessionSnapshot()?.byId?.[member];
+        return row?.running === true;
+      });
       return {
-        running: status.running === true || status.running === undefined && summary?.running === true,
+        running: ownRunning || descendantRunning || hasRunningJob(id),
         pending,
         unread: status.completionUnread === true,
       };
@@ -256,7 +311,7 @@ window.__ModuleLoader__.load({
     }
     function reportError(error) {
       if (state.disposed) return;
-      console.warn("[dsh-session-manager] action failed", error);
+      console.warn("[@pianner/dsh-session-manager] action failed", error);
       state.notice?.remove();
       const notice = owned("div", "dsm-notice");
       notice.setAttribute("role", "alert");
@@ -433,6 +488,7 @@ window.__ModuleLoader__.load({
       return row;
     }
     function updateRow(row, id, summary) {
+      if (!summary) summary = { title: id, updatedAt: 0 };
       const current = id === currentId();
       const status = statusOf(id, summary);
       const primary = status.pending ? "pending" : status.running ? "running" : status.unread ? "done" : "idle";
@@ -444,7 +500,7 @@ window.__ModuleLoader__.load({
       const fullTitle = titleOf(summary, id);
       setText(title, fullTitle);
       if (title.title !== fullTitle) title.title = fullTitle;
-      setText(row.querySelector(".dsm-time"), relativeTime(Number(summary.updatedAt)));
+      setText(row.querySelector(".dsm-time"), relativeTime(Number(summary?.updatedAt || 0)));
       const dot = row.querySelector(".dsm-dot");
       dot.classList.toggle("dsm-dot-running", primary === "running");
       dot.classList.toggle("dsm-dot-pending", primary === "pending");
@@ -592,6 +648,32 @@ window.__ModuleLoader__.load({
       // No indefinitely retained 'last frame': removed/filtered/moved sessions disappear.
       for (const [id, row] of previous) if (!seen.has(id)) row.remove();
     }
+    // Watch the job roster of every session in the tree under each mounted row:
+    // the visible session itself AND its descendants (subagent/team member rows
+    // are filtered out of the rendered list, so their rosters would never be
+    // watched otherwise). Cost stays bounded by the visible list plus its
+    // subagent trees, not by every session the host knows about. A row that
+    // appears later (expanded "show more", a newly committed React frame) is
+    // picked up by the next render pass. Each watch is reference-counted by the
+    // host, read-only (`watchRows` mirrors the roster; no `observe()`, no output
+    // consumption) and released on cleanup, so disabling the plugin leaves no
+    // residual stream.
+    function reconcileJobWatches() {
+      const service = jobService();
+      if (state.disposed || !service || typeof service.watchRows !== "function") return;
+      const want = new Set();
+      document.querySelectorAll(`${SLOT} .dsm-session-row[data-dsm-session-id]`).forEach(row => {
+        const id = row.dataset.dsmSessionId;
+        if (id) for (const member of treeIds(id)) want.add(member);
+      });
+      for (const [id, dispose] of state.jobsWatch) {
+        if (!want.has(id)) { try { dispose(); } catch {} state.jobsWatch.delete(id); }
+      }
+      for (const id of want) {
+        if (state.jobsWatch.has(id)) continue;
+        try { const dispose = service.watchRows(id); if (typeof dispose === "function") state.jobsWatch.set(id, dispose); } catch {}
+      }
+    }
     function render() {
       if (state.disposed || state.rendering) return;
       const tree = document.querySelector(`${SLOT} [role="tree"]`);
@@ -612,6 +694,7 @@ window.__ModuleLoader__.load({
         }
         renderProjectHeader(tree);
         hideNativePinButtons();
+        reconcileJobWatches();
         if (state.menu && (!state.menuAnchor?.isConnected || !state.menuAnchor.getClientRects().length || !byId?.[state.menuSession])) closeMenu();
       } finally {
         state.rendering = false;
@@ -639,6 +722,8 @@ window.__ModuleLoader__.load({
       state.observer?.disconnect(); state.timer?.();
       if (state.renderTimer !== null) window.clearTimeout(state.renderTimer);
       for (const unsubscribe of state.subscriptions.splice(0)) unsubscribe();
+      for (const dispose of state.jobsWatch.values()) { try { dispose(); } catch {} }
+      state.jobsWatch.clear();
       closeMenu(); closeDialog(); state.notice?.remove();
       for (const node of state.hidden.keys()) restoreNative(node);
       restoreNativePinButtons();
@@ -650,8 +735,9 @@ window.__ModuleLoader__.load({
     }
     function apply(ctx) {
       const get = name => typeof ctx.get === "function" ? ctx.get(name) : ctx[name];
+      ctxRef = ctx;
       sessions = get("sessions"); workspaces = get("workspaces"); uiWorkspace = get("uiWorkspace"); uiSession = get("uiSession");
-      if (!sessions?.list || !workspaces?.list || !uiWorkspace || !uiSession?.sessionStatus) { console.warn("[dsh-session-manager] required services unavailable; native UI retained"); return; }
+      if (!sessions?.list || !workspaces?.list || !uiWorkspace || !uiSession?.sessionStatus) { console.warn("[@pianner/dsh-session-manager] required services unavailable; native UI retained"); return; }
       state.disposed = false;
       state.style = owned("style", ""); state.style.dataset.dsmCss = "1"; state.style.textContent = css;
       document.head.appendChild(state.style);
@@ -659,6 +745,9 @@ window.__ModuleLoader__.load({
         const unsubscribe = store?.subscribe?.(requestRender);
         if (typeof unsubscribe === "function") state.subscriptions.push(unsubscribe);
       }
+      const jobsState = jobService()?.state;
+      const jobsUnsub = jobsState?.subscribe?.(requestRender);
+      if (typeof jobsUnsub === "function") state.subscriptions.push(jobsUnsub);
       state.observer = new MutationObserver(observerCallback);
       render();
       const timer = get("timer");

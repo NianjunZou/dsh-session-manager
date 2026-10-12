@@ -17,7 +17,7 @@ jobs:
           # Set it as a repository Actions secret named LEAK_EXTRA; empty if unset.
           LEAK_EXTRA: ${{ secrets.LEAK_EXTRA }}
         run: |
-          STRICT='(/Users/|/home/[a-z])|-----BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20}|gho_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9_]{20}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10}|(password|passwd|secret|api[_-]?key|access[_-]?token|private[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'"']?[^"'"'"'[:space:]]'
+          STRICT='(/Users/|/home/[a-z])|-----BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20}|gho_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9_]{20}|npm_[A-Za-z0-9]{30}|_authToken|_password|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10}|(password|passwd|secret|api[_-]?key|access[_-]?token|private[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'"']?[^"'"'"'[:space:]]'
           fail=0
           for f in $(git ls-files | grep -vE 'package-lock\.json|pnpm-lock\.yaml|yarn\.lock|scripts/git-hooks/|\.github/workflows/'); do
             git show ":$f" | grep -Iq . || continue

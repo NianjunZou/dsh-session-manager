@@ -1,6 +1,6 @@
 {
   "name": "@pianner/dsh-session-manager",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Codex-style left session manager for DSH workspaces.",
   "type": "module",
   "main": "src/index.js",
@@ -59,11 +59,7 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-api-session-controller",
-        "@deepseek-ai/dsh-api-workspace-controller",
-        "@deepseek-ai/dsh-client-ui-session",
-        "@deepseek-ai/dsh-client-ui-workspace",
-        "@deepseek-ai/dsh-cordis-client-runner"
+        "@deepseek-ai/dsh-client-runtime"
       ]
     }
   },

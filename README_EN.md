@@ -47,12 +47,12 @@ Other DSH versions may need adjustment if the client DOM/service contract change
 
 Install from npm: `dsh plugin --profile <profile> add @pianner/dsh-session-manager`,
 add `@pianner/dsh-session-manager` to your DSH desktop profile's `dsh.profile.bundles`,
-and restart DSH. You can also clone this repo for a local dev install. Full steps in
-[`docs/DEPLOY.md`](docs/DEPLOY.md).
+and restart DSH. You can also clone this repo (or use the `.tgz`) for a local dev install.
+Full steps in [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
-The only supported install channel today is a local clone of this repo referenced from the
-DSH profile as a `link:` / `file:` dependency (or a plain local directory). The plugin is not
-published to npm or dshmarket yet.
+Published to npm as `@pianner/dsh-session-manager` (`npm i @pianner/dsh-session-manager`).
+For local development you can also reference a clone of this repo from the DSH profile
+as a `link:` / `file:` dependency (or a plain local directory).
 
 ## Develop & verify
 
