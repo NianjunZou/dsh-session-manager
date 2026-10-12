@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.6 - 2026-10-12
+
+- Added a **red "failed" dot** for a background job in the session tree that settled as `failed` (the only failure the host exposes to the client). Precedence is now 等待(pending) > 正在执行(running) > 任务失败(failed) > 已完成未读 > 空闲; a `failed` job that settles while work is running again is superseded by the blue dot, and a user-requested `killed` job is not treated as a failure.
+  - A failed main agent or subagent is deliberately NOT marked: `SessionStatus` and `SessionSummary` carry no failure flag, so "the run ended" and "the run failed" are indistinguishable on the client. Reading the session log to guess would make the plugin a second source of truth, which the plugin contract forbids.
+- `client/client.js`: `statusOf` now also reports `failed`, `statusLabel` adds 任务失败, and `.dsm-dot-failed` uses `--dsw-alias-red` with a `#e5534b` fallback.
+
 ## 0.1.5 - 2026-10-12
 
 - Published to npm as **`@pianner/dsh-session-manager`**. The unscoped name `dsh-session-manager` is already taken on npm by an unrelated package, so the package, the client module id and the `cordis.patch.yml` bundle name all moved to the `@pianner` scope; the install docs now lead with `dsh plugin --profile <profile> add @pianner/dsh-session-manager`.

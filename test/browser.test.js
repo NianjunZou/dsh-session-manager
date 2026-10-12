@@ -771,6 +771,51 @@ test("a session shows the running dot while a background job runs under one of i
   assert.deepEqual(settled, { status: "idle", dot: 0 });
 });
 
+test("a failed background job marks the session red until the tree runs again", async t => {
+  const page = await mount(t, { sessionIds: ["a", "b"] });
+  assert.equal(await row(page, "a").getAttribute("data-dsm-status"), "idle");
+  // Host settles a background job as failed.
+  const failed = await page.evaluate(() => {
+    fixture.setJobRows({ a: [{ id: "j1", status: "failed" }] });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    return {
+      status: target.dataset.dsmStatus,
+      red: target.querySelectorAll(".dsm-dot-failed").length,
+      blue: target.querySelectorAll(".dsm-dot-running").length,
+      label: target.getAttribute("aria-label"),
+      visible: target.querySelector(".dsm-status-label").textContent,
+    };
+  });
+  assert.deepEqual(failed, { status: "failed", red: 1, blue: 0, label: "Alpha，任务失败", visible: "任务失败" });
+  // A user-requested kill is not a failure.
+  const killed = await page.evaluate(() => {
+    fixture.setJobRows({ a: [{ id: "j1", status: "killed" }] });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    return { status: target.dataset.dsmStatus, red: target.querySelectorAll(".dsm-dot-failed").length };
+  });
+  assert.deepEqual(killed, { status: "idle", red: 0 });
+  // Running wins over an older failure: the red mark clears while work runs again.
+  const rerunning = await page.evaluate(() => {
+    fixture.setJobRows({ a: [{ id: "j1", status: "failed" }, { id: "j2", status: "running" }] });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    return { status: target.dataset.dsmStatus, red: target.querySelectorAll(".dsm-dot-failed").length, blue: target.querySelectorAll(".dsm-dot-running").length };
+  });
+  assert.deepEqual(rerunning, { status: "running", red: 0, blue: 1 });
+  // A failure inside a subagent's tree also marks the parent session.
+  const viaSubagent = await page.evaluate(() => {
+    const list = fixture.list.getSnapshot();
+    fixture.list.set({ ...list, byId: { ...list.byId, "a-sub": { id: "a-sub", displayTitle: "Child", origin: "subagent", parentId: "a", running: false, updatedAt: Date.now(), retainedBy: {} } } });
+    fixture.setJobRows({ "a-sub": [{ id: "j3", status: "failed" }] });
+    fixture.tick();
+    const target = document.querySelector('[data-dsm-session-id="a"]');
+    return { status: target.dataset.dsmStatus, red: target.querySelectorAll(".dsm-dot-failed").length };
+  });
+  assert.deepEqual(viaSubagent, { status: "failed", red: 1 });
+});
+
 test("copy working directory uses the host summary without writing host state", async t => {
   const page = await mount(t);
   await openMenu(page);

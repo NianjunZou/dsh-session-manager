@@ -24,6 +24,7 @@ window.__ModuleLoader__.load({
       statusAwaitingPlanReview: "等待计划确认",
       statusAwaitingAnswer: "等待回答",
       statusRunning: "正在执行",
+      statusFailed: "任务失败",
       statusDoneUnread: "已完成，未读",
       statusIdle: "空闲",
       unreadMark: "未读",
@@ -76,7 +77,7 @@ window.__ModuleLoader__.load({
        .dsm-session-row:hover,.dsm-current{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
       .dsm-title{display:block;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
       .dsm-archived{opacity:.6}.dsm-dot{width:7px;height:7px;border-radius:50%;background:transparent;box-shadow:none;flex:none}
-      .dsm-dot-running{background:var(--dsw-alias-blue,#5b9cff)}.dsm-dot-pending{background:var(--dsw-alias-orange,#e0a33b)}.dsm-dot-done{background:var(--dsw-alias-green,#59b37b)}
+      .dsm-dot-running{background:var(--dsw-alias-blue,#5b9cff)}.dsm-dot-pending{background:var(--dsw-alias-orange,#e0a33b)}.dsm-dot-done{background:var(--dsw-alias-green,#59b37b)}.dsm-dot-failed{background:var(--dsw-alias-red,#e5534b)}
        .dsm-status-label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
        .dsm-unread .dsm-title{font-weight:700}.dsm-unread .dsm-dot{box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-green,#59b37b) 22%,transparent)}
       .dsm-unread-mark{display:inline-flex;flex:none;white-space:nowrap;align-items:center;padding:1px 4px;border-radius:4px;color:var(--dsw-alias-green,#59b37b);font-size:10px;font-weight:600}.dsm-unread-mark[hidden]{display:none}
@@ -154,14 +155,26 @@ window.__ModuleLoader__.load({
     // Any live background job in the tree. `stopping` still counts: the work has
     // not settled until the job reaches a terminal status.
     function jobsSnapshot() { return snapshot(jobService()?.state); }
-    function hasRunningJob(id) {
+    function jobRowsOf(id) {
       const rows = jobsSnapshot()?.rows;
-      if (!rows) return false;
+      if (!rows) return [];
+      const out = [];
       for (const member of treeIds(id)) {
         const jobsOf = rows[member];
-        if (Array.isArray(jobsOf) && jobsOf.some(job => job && (job.status === "running" || job.status === "stopping"))) return true;
+        if (Array.isArray(jobsOf)) out.push(...jobsOf);
       }
-      return false;
+      return out;
+    }
+    function hasRunningJob(id) {
+      return jobRowsOf(id).some(job => job && (job.status === "running" || job.status === "stopping"));
+    }
+    // A terminal `failed` background job is the only failure the host exposes to
+    // the client: SessionStatus/SessionSummary carry no failure flag, so a failed
+    // main agent or subagent is indistinguishable from a normal stop and is
+    // deliberately NOT guessed here. `killed` is a user-requested stop, not a
+    // failure. The red mark clears by itself as soon as the tree runs again.
+    function hasFailedJob(id) {
+      return jobRowsOf(id).some(job => job && job.status === "failed");
     }
     function statusOf(id, summary) {
       const status = statusSnapshot().get(id) || {};
@@ -171,8 +184,10 @@ window.__ModuleLoader__.load({
         const row = sessionSnapshot()?.byId?.[member];
         return row?.running === true;
       });
+      const running = ownRunning || descendantRunning || hasRunningJob(id);
       return {
-        running: ownRunning || descendantRunning || hasRunningJob(id),
+        running,
+        failed: !running && hasFailedJob(id),
         pending,
         unread: status.completionUnread === true,
       };
@@ -182,6 +197,7 @@ window.__ModuleLoader__.load({
       if (status.pending === "plan-review") return STRINGS.statusAwaitingPlanReview;
       if (status.pending === "question") return STRINGS.statusAwaitingAnswer;
       if (status.running) return STRINGS.statusRunning;
+      if (status.failed) return STRINGS.statusFailed;
       if (status.unread) return STRINGS.statusDoneUnread;
       return STRINGS.statusIdle;
     }
@@ -491,7 +507,7 @@ window.__ModuleLoader__.load({
       if (!summary) summary = { title: id, updatedAt: 0 };
       const current = id === currentId();
       const status = statusOf(id, summary);
-      const primary = status.pending ? "pending" : status.running ? "running" : status.unread ? "done" : "idle";
+      const primary = status.pending ? "pending" : status.running ? "running" : status.failed ? "failed" : status.unread ? "done" : "idle";
       row.classList.toggle("dsm-current", current); row.classList.toggle("dsm-archived", isArchived(id)); row.classList.toggle("dsm-unread", status.unread);
       row.dataset.dsmStatus = primary;
       row.setAttribute("aria-selected", String(current));
@@ -505,6 +521,7 @@ window.__ModuleLoader__.load({
       dot.classList.toggle("dsm-dot-running", primary === "running");
       dot.classList.toggle("dsm-dot-pending", primary === "pending");
       dot.classList.toggle("dsm-dot-done", primary === "done");
+      dot.classList.toggle("dsm-dot-failed", primary === "failed");
       const unread = row.querySelector(".dsm-unread-mark");
       unread.hidden = !status.unread;
       const statusNode = row.querySelector(".dsm-status-label");
