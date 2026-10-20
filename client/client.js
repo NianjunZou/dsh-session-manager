@@ -1431,6 +1431,22 @@ window.__ModuleLoader__.load({
        click target to the full row height without moving a single pixel of layout. */
     .dsm-dot-slot{position:relative}
     .dsm-dot-slot::after{content:'';position:absolute;inset:-6px -2px}
+    /* Running must read as active at row scale. The shipped StateDot paints the
+       ongoing spinner in label-tertiary, which collapses into the neutral idle step
+       sitting in the same column; tint the shipped glyph with the accent this region
+       already uses for selection and drop targets. Strokes (svg) and borders (harness
+       stub) both ride currentColor, so one declaration carries to either renderer;
+       idle keeps the theme's own neutral step untouched. */
+    /* The running ring has to announce itself at a glance: the shipped default is a
+       14px hairline in tertiary grey. Everything here rides currentColor (the tint
+       above), so it stays one accent: a 16px box, a heavier stroke, a brighter track,
+       a faint halo, and a slightly faster cycle (both host animations share one
+       duration, so they stay in step). */
+    .dsm-dot-slot [data-state='ongoing']{color:var(--dsw-alias-state-business-primary);filter:drop-shadow(0 0 2px color-mix(in srgb,currentColor 60%,transparent))}
+    .dsm-dot-slot svg[data-state='ongoing']{width:16px;height:16px}
+    .dsm-dot-slot svg[data-state='ongoing'] circle{stroke-width:2.5}
+    .dsm-dot-slot svg[data-state='ongoing'] circle:first-of-type{opacity:.4}
+    .dsm-dot-slot svg[data-state='ongoing'] *{animation-duration:1.15s}
     .dsm-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:14px;line-height:20px;margin:0 6px 0 4px}
     .dsm-row[data-unread="true"] .dsm-title{font-weight:600}
     .dsm-workspace{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
@@ -1500,15 +1516,19 @@ window.__ModuleLoader__.load({
       // One description for both audiences: the screen reader reads it from the
       // hidden text, and a sighted user gets it on hover.
       const description = label.join('，')
-      // Every row carries exactly one shipped dot, resting rows included: the native
-      // browser paints the neutral idle step in the same slot, and a column that
-      // sometimes has a dot and sometimes does not reads as broken alignment.
+      // Resting rows paint no glyph at all. The shipped neutral idle dot read as
+      // "status unknown" beside a live spinner, and at 32px row height the two greys
+      // were the same shape; a quiet row is better said by the empty cell than by a
+      // dot that means nothing is happening. The 16x20 cell stays so every title keeps
+      // the same left edge, and the state still reaches screen readers through the
+      // hidden text and hover title.
+      const resting = plan.primary === 'idle'
       return h('span', {
         className: 'dsm-dot-slot',
         title: description,
-        'data-dot': plan.primary,
+        'data-dot': resting ? 'none' : plan.primary,
       },
-        h(StateDot, { state: plan.primary }),
+        resting ? null : h(StateDot, { state: plan.primary, size: plan.primary === 'ongoing' ? 16 : undefined }),
         h('span', { className: 'dsm-visually-hidden' }, description),
       )
     }
@@ -2561,7 +2581,7 @@ window.__ModuleLoader__.load({
     }
 
     /** Required client services; `jobs` is fetched lazily because a build may omit it. */
-    const inject = ['slots', 'sessions', 'workspaces', 'uiWorkspace', 'uiSession', 'locale']
+    const inject = ['slots', 'sessions', 'workspaces', 'uiWorkspace', 'locale']
 
     /**
      * Register the browsing region and its dictionaries.

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Manager",
+    "description": "Codex-style left session list for DSH workspaces: running/idle dots, pinning, archive, priorities, drag reordering."
+  }
+}

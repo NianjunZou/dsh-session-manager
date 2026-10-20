@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### 新增
+
+- **插件展示名双语化。** 宿主插件页/插件清单的标题与描述来自包内导出的
+  `locale/<lang>.json`（`meta.title` / `meta.description`），读取时不执行插件代码
+  （`deepseek-harness@dsh-v0.2.1-alpha.5` 的 `boot/app-boot/src/package-meta.ts`：
+  `<pkg>/locale/en.json` 为基准词典，同名目录下每个 `<lang>.json` 提供一种语言，
+  `package.json#name`/`description` 只作缺省回退）。新增 `locale/en.json`（Session Manager）
+  与 `locale/zh.json`（会话管理器）；中文界面下插件名显示汉字，英文界面显示英文名。
+  `exports` 增加 `./locale/*`，`files` 增加 `locale`，单测钉住「中文标题必须含汉字、
+  英文标题 ASCII、两词典 key 集一致」。
+
+### 优化
+
+- **空闲行不再画灰点；运行中的转圈改成强调色。** 宿主 `StateDot` 的 ongoing 用
+  `label-tertiary`（灰）画环、idle 也是中性灰点，在 32px 行高里两态几乎同形同色。
+  现在：空闲行**不画任何字形**（16×20 状态格保留，标题左边缘不动，屏幕阅读器/悬停标题
+  仍念"空闲"）；运行中只在宿主 spinner 上叠一层本区域已用的强调色
+  （`.dsm-dot-slot [data-state='ongoing']` → `state-business-primary`，描边走
+  `currentColor`，reduced-motion 静止弧同为蓝色）；并把它做得更醒目：盒子 14→16px、
+  描边 2→2.5px、轨道不透明度 .25→.4、加 2px 同色光晕、周期 1.5s→1.15s（宿主两个动画共用
+  同一时长，仍同步）；未读仍是绿色 done 点、等待处理仍是琥珀 warning 点。新增断言防止退回
+  "每行一个灰点"或"两态同色"。
+- **声明面收窄：`dsh.client.inject` 11 → 0。** 该字段是「包到达边」，只用于让已组成的包行先到达，
+  **不参与 apply 时序、也不提供模块**（`deepseek-harness@dsh-v0.2.1-alpha.5`：
+  `client/modules/src/client/system.ts` 的 arrival 逻辑、`ui-workspace/src/client/index.ts` 的
+  "never apply sequencing" 注释）。本插件 bundle 只 `require` 3 个**平台种子**
+  （`react` / `@deepseek-ai/dsh-client-store` / `@deepseek-ai/dsh-client-ui-primitives`），种子由
+  shell 直接提供，不需要任何到达边；此前声明的 11 个包里，`@deepseek-ai/dsh-client-ui-primitives`
+  是种子（no-op 边），其余 10 个并未被 require——多声明只会把「该包到达失败」连到本插件。
+- **移除未使用的 `uiSession` 必需服务声明。** 代码里从未调用 `ctx.uiSession`（会话状态经 slot
+  标准 props 的 `useSessionStatus` 提供），保留它只会让精简构建白等或在服务缺失时拒绝加载。
+- **测试改为理由断言**：`dsh.client.inject` == 「bundle 真实 require 的非种子模块集合」；另新增
+  「每个声明的 cordis 服务都必须被 `ctx.<service>` 使用」断言，防止再次漂移回堆声明。
+
+`npm test` 125 项通过（含 `DSH_SOURCE=<checkout>` 的 alignment lane）；`npm run verify` 通过；
+`dsh-plugin-dev` 的 preflight 声明面检查由 12 条 WARN 变为「干净：服务 5 项、包边 0 项、真实 require 3 项」。
+
 ## 0.1.7 - 2026-10-20
 
 ### 破坏性变更
