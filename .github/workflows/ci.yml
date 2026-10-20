@@ -38,12 +38,12 @@ jobs:
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
       - name: Lint
         run: npm run lint
-      - name: Static + contract lane
+      - name: Build and check the committed client bundle is current
+        run: |
+          npm run build
+          git diff --exit-code -- client/client.js
+      - name: Static, contract and core lanes
         run: |
           node --check client/client.js
-          node --test test/plugin.test.js
-          node scripts/check-plugin-contract.mjs .
-      - name: Browser regression lane
-        run: |
-          npx playwright install --with-deps chromium
-          npm run test:browser
+          npm test
+          npm run verify:contract
