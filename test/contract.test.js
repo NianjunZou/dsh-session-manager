@@ -452,6 +452,14 @@ test('one dot per row: anything running spins it, and no extra glyph is painted'
   const states = []
   walk(tree, node => { if (node.type === 'stub-statedot') states.push(node.props.state) })
   assert.ok(states.includes('ongoing'), 'a row with running work renders the spinner')
+  // Resting rows keep the cell but paint nothing: the neutral idle dot read as a
+  // second grey shape next to the spinner, so the column says "quiet" by absence.
+  const slots = []
+  walk(tree, node => { if (node.props?.className === 'dsm-dot-slot') slots.push(node.props) })
+  const resting = slots.filter(slot => slot['data-dot'] === 'none')
+  assert.ok(resting.length > 0, 'idle rows keep their cell')
+  assert.ok(states.length < slots.length, 'idle rows paint no shipped dot')
+  for (const slot of resting) assert.equal(slot.title, 'status.idle', 'the quiet row still names itself')
 
   // A session whose only activity is a background job: the same single spinner,
   // and nothing beside the title. The old design painted a second amber mark for

@@ -25,22 +25,55 @@ test('identity is one thing across package, client module id and bundle name', (
   assert.ok(patch.includes(`name: '@pianner/dsh-session-manager'`))
 })
 
-test('the client manifest declares the real packages it loads', () => {
+// Platform seeds the host shell provides; a bundle may `require` these without
+// any arrival edge. Source: deepseek-harness packages/client/web/src/platform.ts
+const PLATFORM_SEEDS = new Set([
+  'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis', 'zod',
+  '@tanstack/react-virtual', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-slots',
+  '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-dockkit',
+])
+
+test('plugin display metadata is bilingual and ships with the package', () => {
+  // The Host reads display text from exported locale JSON (`<pkg>/locale/<lang>.json`
+  // -> `meta.title` / `meta.description`) without evaluating plugin code; Chinese
+  // therefore needs its own dictionary, not a translated package name.
+  assert.match(pkg.exports['./locale/*'] ?? '', /^\.\/locale\/\*$/)
+  assert.ok(pkg.files.includes('locale'), 'publish list must carry locale/')
+  const read = name => JSON.parse(readFileSync(new URL(`../locale/${name}.json`, import.meta.url), 'utf8'))
+  const en = read('en')
+  const zh = read('zh')
+  assert.ok(en.meta?.title && zh.meta?.title, 'both dictionaries must ship meta.title')
+  assert.ok(en.meta?.description && zh.meta?.description, 'both dictionaries must ship meta.description')
+  assert.match(en.meta.title, /^[\x20-\x7e]+$/, 'English title stays ASCII')
+  assert.match(zh.meta.title, /[\u4e00-\u9fff]/, 'Chinese title must be Chinese characters')
+  assert.notEqual(zh.meta.title, en.meta.title)
+  assert.deepEqual(Object.keys(en.meta).sort(), Object.keys(zh.meta).sort())
+})
+
+test('dsh.client.inject declares exactly the non-seed modules the bundle requires', () => {
   const declared = pkg.dsh.client.inject
-  assert.ok(Array.isArray(declared) && declared.length > 0)
-  // The placeholder that never existed in any DSH release must be gone.
-  assert.equal(declared.includes('@deepseek-ai/dsh-client-runtime'), false)
-  // Every declared row must be one the boot graph can actually resolve; the
-  // standard hooks this region reads need these packages' factories in place.
-  for (const name of declared) assert.match(name, /^@deepseek-ai\/dsh-/)
-  for (const name of ['@deepseek-ai/dsh-client-ui-renderer', '@deepseek-ai/dsh-client-ui-sidebar',
-    '@deepseek-ai/dsh-client-ui-workspace', '@deepseek-ai/dsh-client-ui-session',
-    '@deepseek-ai/dsh-client-locale', '@deepseek-ai/dsh-client-ui-primitives',
-    '@deepseek-ai/dsh-api-session-controller', '@deepseek-ai/dsh-api-workspace-controller']) {
-    assert.ok(declared.includes(name), `${name} must be declared so its factory arrives first`)
-  }
+  assert.ok(Array.isArray(declared), 'dsh.client.inject must be an array (empty is valid)')
+  // Reason, not a snapshot: arrival edges exist only for non-seed modules this
+  // bundle actually requires. Seeds need no edge (the shell provides them) and
+  // a service name is not a package edge. See dsh-plugin-dev
+  // references/host-declaration-surfaces.md (R2).
+  const required = new Set(
+    [...code.matchAll(/require\('([^']+)'\)/g)].map(match => match[1]).filter(name => !PLATFORM_SEEDS.has(name)),
+  )
+  assert.deepEqual([...declared].sort(), [...required].sort())
   assert.match(pkg.peerDependencies.react, /^\^18/)
   assert.match(pkg.peerDependencies['@deepseek-ai/dsh-client-ui-slots'], /0\.2\.0-alpha\.0/)
+})
+
+test('every required cordis service is actually used by the plugin', () => {
+  // R4: a declared service is a load gate; declaring one the code never touches
+  // makes slim builds wait (or refuse to load) for nothing.
+  const declared = [...code.matchAll(/const inject = \[([^\]]*)\]/g)]
+    .flatMap(match => [...match[1].matchAll(/'([^']+)'/g)].map(hit => hit[1]))
+  assert.ok(declared.length > 0, 'the client entry must declare its required services')
+  for (const service of declared) {
+    assert.match(code, new RegExp(`ctx\\.${service}\\b`), `declared service ${service} is never used as ctx.${service}`)
+  }
 })
 
 test('the bundle is the single module-loader registration the runtime can materialize', () => {
@@ -60,6 +93,20 @@ test('the region shadows the sidebar browsing cell and declares its locale', () 
   assert.match(code, /registrant: '@pianner\/dsh-session-manager'/)
   assert.match(code, /ctx\.slots\.inject\('sidebar\.workspaces'/)
   assert.match(code, /ctx\.locale\.register\(NS, \{ zh, en \}\)/)
+})
+
+test('the running dot is toned apart from the neutral idle step', () => {
+  // A grey spinner at hairline weight is unreadable at row scale. The region tints
+  // only the ongoing glyph and enlarges it: accent colour, 16px box, heavier
+  // stroke, brighter track, a faint halo and a slightly faster cycle. Idle rows
+  // paint nothing at all, so there is no neutral step to confuse it with.
+  assert.match(code, /\.dsm-dot-slot \[data-state='ongoing'\]\{color:var\(--dsw-alias-state-business-primary\);/)
+  assert.match(code, /svg\[data-state='ongoing'\]\{width:16px;height:16px\}/)
+  assert.match(code, /svg\[data-state='ongoing'\] circle\{stroke-width:2\.5\}/)
+  assert.match(code, /svg\[data-state='ongoing'\] circle:first-of-type\{opacity:\.4\}/)
+  assert.match(code, /svg\[data-state='ongoing'\] \*\{animation-duration:1\.15s\}/)
+  assert.match(code, /drop-shadow\(0 0 2px color-mix\(in srgb,currentColor 60%,transparent\)\)/)
+  assert.doesNotMatch(code, /\.dsm-dot-slot \[data-state='idle'\]/)
 })
 
 test('the region never edits host-rendered DOM', () => {
@@ -205,9 +252,12 @@ test('status is one dot in the shipped vocabulary, with the detail as its title'
   assert.match(code, /require\('@deepseek-ai\/dsh-client-ui-primitives'\)/)
   assert.match(code, /StateDot/)
   assert.match(code, /dotPlan\(status\)/)
-  // The dot — including its idle step and its 10/14 sizes — is the shipped
-  // component's; the region paints no state colour of its own for it.
-  assert.match(code, /h\(StateDot, \{ state: plan\.primary \}\)/)
+  // The dot — including its 10/14 sizes — is the shipped component's; the region
+  // only ever tones the running spinner (a token already used for selection), and
+  // resting rows paint no glyph at all.
+  assert.match(code, /const resting = plan\.primary === 'idle'/)
+  assert.match(code, /resting \? null : h\(StateDot, \{ state: plan\.primary, size: plan\.primary === 'ongoing' \? 16 : undefined \}\)/)
+  assert.match(code, /'data-dot': resting \? 'none' : plan\.primary/)
   assert.equal(code.includes('--dsw-alias-state-idle-primary'), false)
   assert.equal(code.includes('--dsw-alias-state-success-primary'), false)
   // 0.1.6's guessed color aliases and hard-coded fallbacks are gone.
@@ -225,7 +275,7 @@ test('status is one dot in the shipped vocabulary, with the detail as its title'
   // to the row height so it can be pointed at without aiming.
   assert.match(code, /const description = label\.join\('，'\)/)
   assert.match(code, /className: 'dsm-dot-slot',\s*\n\s*title: description/)
-  assert.match(code, /'data-dot': plan\.primary/)
+  assert.match(code, /'data-dot': resting \? 'none' : plan\.primary/)
   assert.match(code, /\.dsm-dot-slot\{position:relative\}/)
   assert.match(code, /\.dsm-dot-slot::after\{content:'';position:absolute;inset:-6px -2px\}/)
   // The composition sentence is built from the split roster counts, so the single
