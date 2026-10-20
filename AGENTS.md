@@ -8,18 +8,19 @@ A local DSH plugin that gives the left workspace a Codex-style session list.
 它只接管左侧工作区中的会话行与会话菜单，不修改 DSH/Harness 源码，不接管右侧 sidebar。详见 [`README.md`](README.md) 与 [`PLUGIN-CONTRACT.md`](PLUGIN-CONTRACT.md)。
 
 - 运行时：DSH web client plugin（`client/platform: web`，宿主注入 `@deepseek-ai/dsh-client-runtime`）。
-- 关键文件：`client/client.js`（client 入口与全部行为）、`src/index.js`（host 半，空 apply）、`cordis.patch.yml`（bundle 登记）。
+- 关键文件：`client/client.js`（**生成物**，由 `npm run build` 从 `src/client/{core,body}.js` 生成）、`src/index.js`（host 半，空 apply）、`cordis.patch.yml`（bundle 登记）。
 
 ## 构建与验证
 
 ```bash
-npm test              # node --test：静态 + fixture/contract 回归
-npm run test:browser  # 独立临时 Chrome 下的 DOM/服务回归（需本地 playwright 浏览器）
-npm run verify        # node --check client/client.js + npm test + 插件契约检查
+npm run build         # 由 src/client/{core,body}.js 生成 client/client.js
+npm test              # node --test：core / contract / 产物静态 / a11y
+npm run verify        # build + node --check + npm test + 插件契约检查
+DSH_SOURCE=<checkout> npm run verify:align   # 对着宿主源码校验 slot / StateDot / 图标 / API
 ```
 
-- 改完 `client/client.js` 后至少跑 `npm run verify`。
-- 新增行为补测试（`test/plugin.test.js` 静态/契约，`test/browser.test.js` DOM 回归）。
+- 改完 `src/client/*` 后先 `npm run build`，再跑 `npm run verify`（产物与源码不一致会被 `test/plugin.test.js` 拦住）。
+- 新增行为补测试（`test/plugin.test.js` 静态/契约，`test/contract.test.js` 渲染契约，`test/core.test.js` 纯函数；真浏览器验收由维护者在本地台架完成（不随仓库分发））。
 
 ## 硬性红线
 

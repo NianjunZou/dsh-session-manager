@@ -15,3 +15,6 @@ playwright-report/
 
 # Packaged tarball (build artifact)
 *.tgz
+
+# Maintainer-local browser harness and app inspector (vendored React, local ports)
+dev/
