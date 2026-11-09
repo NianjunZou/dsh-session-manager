@@ -100,14 +100,14 @@ node scripts/check-plugin-contract.mjs .
 
 ## 7. 原 checkout 残留审计（2026-11-09）
 
-原 checkout（`main`）仍有 3 类未提交内容，均**未**带入本 worktree，也没有被修改：
+原 checkout（`main`）曾有 4 类未提交内容；它们没有被带入本 worktree，并在 2026-11-09 按用户确认全部丢弃。当前原 checkout 已 clean：
 
-| 内容 | 实际改动 | 判断 |
+| 内容 | 实际改动 | 处置 |
 |---|---|---|
-| `src/client/core.js` + `client/client.js`：blank 可见性 | `row.blank === true && id !== currentId && !row.title && !row.displayTitle` | **应丢弃**：宿主 `displayTitle` 由 `displayTitleOf(...)` 兜底到 id，永远非空，所以条件恒为 false，所有 blank 行都会显示。原意若只是去掉 blank 过滤，应单独提 issue 并补测试。 |
-| `core.js` + bundle：`SESSION_PAGE_BASE` | 5 → 50 | **待定**：若确实想每个分组一次显示 50 行，应同时改源码与测试；不要只留 bundle。当前 worktree 仍是 5。 |
-| `client/client.js`：macOS 表头 CSS | 玻璃 `color-mix` + `backdrop-filter` → 不透明 `--dsw-alias-bg-layer-2,#1e1e1e` | **应丢弃或回源**：只改了 bundle，源码 `body.js` 仍是玻璃；下一次构建会丢。 |
-| 未跟踪 `client/client.js.bak-20261029021744` | 本地备份 | 删除；不应入库 |
-| 未跟踪 `docs/DESIGN-0.2.0.md` | 11-08 的旧设计稿 | 删除；正式版已在本仓 `docs/DESIGN-0.2.0.md` |
+| `src/client/core.js` + `client/client.js`：blank 可见性 | `row.blank === true && id !== currentId && !row.title && !row.displayTitle` | **已丢弃（2026-11-09）**：宿主 `displayTitle` 由 `displayTitleOf(...)` 兜底到 id，永远非空，所以条件恒为 false，所有 blank 行都会显示。 |
+| `core.js` + bundle：`SESSION_PAGE_BASE` | 5 → 50 | **已丢弃（2026-11-09）**：保持 5；50 会基本关掉分组分页。若未来要更多行，应以 5/10/20 的可选设置实现，而不是写死常量。 |
+| `client/client.js`：macOS 表头 CSS | 玻璃 `color-mix` + `backdrop-filter` → 不透明 `--dsw-alias-bg-layer-2,#1e1e1e` | **已丢弃（2026-11-09）**：源码 `body.js` 的玻璃效果保留；不透明只改 bundle 会在下次构建丢失，也不跟主题。 |
+| 未跟踪 `client/client.js.bak-20261029021744` | 本地备份 | **已删除（2026-11-09）**；不应入库 |
+| 未跟踪 `docs/DESIGN-0.2.0.md` | 11-08 的旧设计稿 | **已删除（2026-11-09）**；正式版已在本仓 `docs/DESIGN-0.2.0.md` |
 
-结论：**不建议原样提交**。若要保留 50 行分页，应作为独立改动重做并补测试；blank 与 CSS 两项应丢弃。
+结论：4 项已全部丢弃，原 checkout 工作树 clean；50 行分页未保留，当前仍为 5。

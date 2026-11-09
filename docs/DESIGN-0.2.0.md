@@ -667,6 +667,19 @@ buildFolderViews({ groups, state, active })       // -> { [group.key]: view | nu
 - `PLUGIN-CONTRACT.md`：按 §6.2，仅在批准后修改。
 - 文档不得出现本机绝对路径（CI leak-scan 会拦截 macOS / Linux 用户主目录的绝对路径，`.github/workflows/ci.yml:20`；`docs/` 随 npm 包发布）。
 
+### 6.3.1 原 checkout 残留处置（2026-11-09）
+
+原 checkout 的 4 类未提交内容已逐项检查，并在用户确认后**全部丢弃**；本 worktree 不包含这些改动。
+
+| 残留 | 实际内容 | 处置与理由 |
+|---|---|---|
+| blank 可见性 | `core.js` + bundle：`row.blank === true && id !== currentId && !row.title && !row.displayTitle` | 丢弃。宿主 `displayTitle` 由 `displayTitleOf(...)` 兜底到 id，永远非空，条件恒 false，结果是把所有 blank 行放出来 |
+| 分页基数 | `core.js` + bundle：`SESSION_PAGE_BASE` 5 → 50 | 丢弃。会把每个分组默认铺 50 行，基本关掉分页；当前保持 5，attention 仍会自动抬升 |
+| macOS 表头 CSS | 只改 bundle：玻璃 `color-mix` + `blur` → 不透明 `--dsw-alias-bg-layer-2,#1e1e1e` | 丢弃。源码 `body.js` 的玻璃效果保留：macOS sidebar 是 window vibrancy，不透明硬编码会读成外来板，且下次构建会丢 |
+| 备份 / 旧稿 | `client/client.js.bak-20261029021744`、旧 `docs/DESIGN-0.2.0.md` | 删除。备份不入库；旧设计稿已被本文件取代 |
+
+处置后原 checkout 工作树 clean；`main` 上未推送的 `d2ed52a` 不属于这 4 项，保持不动。
+
 ### 6.4 降级与回滚
 
 - 回滚到 0.1.7：旧代码不读该键，会话按工作区正常显示；数据留在本地，重装 0.2.0 即恢复。
@@ -681,7 +694,7 @@ buildFolderViews({ groups, state, active })       // -> { [group.key]: view | nu
 
 ## 7. 测试与验收设计
 
-本节是**待实现的用例清单**，一条都还没写、没跑。lane 说明：`core` = `test/core.test.js` 纯函数；`contract` = `test/contract.test.js`
+本节是设计与验收用例清单；P0 实现后 152 条测试已跑通，未覆盖项见 `docs/ACCEPTANCE-0.2.0.md`。lane 说明：`core` = `test/core.test.js` 纯函数；`contract` = `test/contract.test.js`
 渲染契约（fake React + stub primitives，store 走 `observable` 回退，`useMemo`/`useCallback` 不看依赖）；`static` = `test/plugin.test.js`
 对产物的字符串断言；`align` = `test/alignment.test.js`（需 `DSH_SOURCE`）；`browser` = 维护者台架（不随仓库分发）；`manual` = 实机人工。
 
