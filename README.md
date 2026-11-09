@@ -46,8 +46,13 @@ session ordering, and a layered status indicator.
   P4 灰字 + 10% 灰底。状态色（红 / 琥珀 / 绿 / 中性）只属于状态点，优先级规则里不出现。
   状态经官方 `dsh-client-store` 持久化（键 `dsh-session-manager.priority`），
   0.1.7 早期按颜色存的值会自动映射到等级。
+- **虚拟子目录（0.2.0 新增）**：每个工作区可建最多 20 个**一级**虚拟子目录；工作区表头常驻 folder-plus 新建；
+  目录在项目分组内以**可折叠树**呈现（工作区 → 目录 → 会话），不再有「全部 / 目录」chip 行；
+  目录标题只保留一个计数与 attention 点，未分类仅在有会话时出现。行菜单「移到子目录」归置。子目录只改变显示分组，
+  不写磁盘、不改宿主顺序；数据存插件本地键 `dsh-plugin:dsh-session-manager:folders`（版本化 schema），
+  停用插件后原生列表完整，重新启用即恢复。详细限制见 [`docs/USAGE.md`](docs/USAGE.md#虚拟子目录020)。
 - 结构：一级标题「工作区」→「置顶会话」标题带（宿主 `pinnedSessionIds` 顺序，与工作区分组去重）
-  →「项目会话」标题带 → 各工作区分组（文件夹图标 + 展开/折叠）。
+  →「项目会话」标题带 → 各工作区分组（文件夹图标 + 展开/折叠；有子目录时再分小节）。
 - 所有图标取官方 `dsh-client-ui-primitives` 图标集（搜索 / 筛选 / 添加工作区 / 文件夹 /
   折叠箭头 / 更多），不使用文字符号，避免字重与基线跟外壳其余部分不一致。
 - 会话行折叠为单行标题 + 固定时间列；等待交互时时间列改为等待标签。
@@ -74,9 +79,10 @@ DSH 客户端对"会话失败"没有权威信号：`SessionStatus` 只有 `runni
 
 ## 兼容性
 
-针对 DSH desktop 的 web client 开发与测试，目标版本 **`dsh-v0.2.1-alpha.5`**（`client-ui-slots` /
-`client-ui-sidebar` / `client-ui-workspace` / `client-ui-session` 的 `0.2.1-alpha.5` 契约）。
-其它 DSH 版本可能因客户端服务/slot 契约变化而需适配。
+针对 DSH desktop 的 web client 开发与测试，已验证基线 **`dsh-v0.2.2-rc.1`**（`client-ui-slots` /
+`client-ui-sidebar` / `client-ui-workspace` / `client-ui-session` 的 `0.2.2-rc.1` 契约）。
+peer 范围 `>=0.2.0-alpha.0 <0.3.0-0` 按 DSH 运行时的 `includePrerelease` 语义覆盖 0.2.1-alpha.5 与
+0.2.2-rc.1，并排除 0.3.0-alpha.*。其它 DSH 版本可能因客户端服务/slot 契约变化而需适配。
 
 ## 与官方会话区的关系（0.1.7 已知取舍）
 
@@ -112,20 +118,20 @@ DSH 客户端对"会话失败"没有权威信号：`SessionStatus` 只有 `runni
 
 从 npm 安装：`dsh plugin --profile <profile> add @pianner/dsh-session-manager`，并在 `dsh.profile.bundles` 中加入 `@pianner/dsh-session-manager`，重启 DSH。也可 clone 本仓库（或使用 `.tgz`）做本地开发安装。完整步骤见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
-npm 上是 **0.1.7**（本仓库当前版本）。发布清单见
-[`docs/DEPLOY.md`](docs/DEPLOY.md)，验收记录见 [`docs/ACCEPTANCE-0.1.7.md`](docs/ACCEPTANCE-0.1.7.md)。
+本仓库当前版本是 **0.2.0**（开发中，尚未发布到 npm）。发布清单见
+[`docs/DEPLOY.md`](docs/DEPLOY.md)，验收记录见 [`docs/ACCEPTANCE-0.2.0.md`](docs/ACCEPTANCE-0.2.0.md)。
 
 ## 开发与验证
 
 ```bash
 npm run build         # 由 src/client/{core,body}.js 生成 client/client.js（单文件 client 入口）
-npm test              # 112 条 lane：core + 契约 + 产物静态断言 + a11y（对齐 lane 无源码时自跳过）
+npm test              # 152 条 lane；未设 DSH_SOURCE 时 13 条 alignment 自跳过
 npm run verify        # build + node --check + npm test + 插件契约检查
 DSH_SOURCE=~/deepseek-harness npm run verify:align   # 对着宿主源码校验 slot / Menu / StateDot / 图标 / API
 ```
 
 真浏览器交互验收由维护者在本地台架（真 React + 真 DOM + 真鼠标）完成，台架不随仓库分发；
-逐项结果与未验收项见 [`docs/ACCEPTANCE-0.1.7.md`](docs/ACCEPTANCE-0.1.7.md)。
+逐项结果与未验收项见 [`docs/ACCEPTANCE-0.2.0.md`](docs/ACCEPTANCE-0.2.0.md)。
 
 `client/client.js` 是**生成物但入库**（npm 包无需消费者构建）：改动 `src/client/*` 后必须重新
 `npm run build`，`test/plugin.test.js` 会守住产物与源码的一致性。
@@ -136,7 +142,9 @@ DSH_SOURCE=~/deepseek-harness npm run verify:align   # 对着宿主源码校验 
 
 - [`docs/USAGE.md`](docs/USAGE.md) — 使用说明
 - [`docs/DEPLOY.md`](docs/DEPLOY.md) — 安装 / 部署 / 卸载 / 发布
-- [`docs/ACCEPTANCE-0.1.7.md`](docs/ACCEPTANCE-0.1.7.md) — 验收记录与验证缺口
+- [`docs/ACCEPTANCE-0.1.7.md`](docs/ACCEPTANCE-0.1.7.md) — 0.1.7 验收记录与验证缺口
+- [`docs/ACCEPTANCE-0.2.0.md`](docs/ACCEPTANCE-0.2.0.md) — 0.2.0 验收记录与验证缺口
+- [`docs/DESIGN-0.2.0.md`](docs/DESIGN-0.2.0.md) — 0.2.0 虚拟子目录设计
 - [`docs/DESIGN-0.1.7.md`](docs/DESIGN-0.1.7.md) — 0.1.7 设计与调研
 - [`PLUGIN-CONTRACT.md`](PLUGIN-CONTRACT.md) — 本地 DSH 插件契约
 

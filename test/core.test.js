@@ -10,14 +10,31 @@ import assert from 'node:assert/strict'
 
 import {
   DOT,
+  FOLDER_ALL,
+  FOLDER_INIT,
+  FOLDER_MAX_PER_WORKSPACE,
+  FOLDER_UNFILED,
   SESSION_PAGE_BASE,
   STATE_DOT,
+  assignSession,
+  buildFolderView,
+  buildFolderViews,
   buildSearchNodes,
+  createFolder,
+  deleteFolder,
+  folderNameError,
+  foldersOf,
+  moveFolder,
   nextPageLimit,
   pageRows,
+  pruneAssign,
+  readFolderState,
+  renameFolder,
   requiredPageLimit,
+  sanitizeFolderState,
   sanitizeQuery,
   workspaceLabelOf,
+  workspaceOfSession,
   buildChildren,
   buildRollup,
   computeGroups,
@@ -345,6 +362,185 @@ test('splitPinned separates the pinned block without dropping archived pins', ()
     archivedSessionIds: ['c'],
   })
   assert.deepEqual(split, { pinned: ['b'], ordinary: ['a', 'c'] })
+})
+
+/* ------------------------------------------------------------------ *
+ * Virtual subfolders
+ * ------------------------------------------------------------------ */
+
+test('readFolderState classifies empty, current and unknown versions without writing', () => {
+  assert.equal(readFolderState(undefined).mode, 'empty')
+  assert.equal(readFolderState(null).mode, 'empty')
+  assert.deepEqual(readFolderState(FOLDER_INIT), { mode: 'empty', state: FOLDER_INIT })
+  assert.equal(readFolderState({ v: 1, workspaces: {} }).mode, 'ok')
+  assert.deepEqual(readFolderState({ v: 2, workspaces: {} }), {
+    mode: 'readonly', reason: 'newer', state: FOLDER_INIT,
+  })
+  for (const raw of [[], 'x', 3, {}, { v: '1' }, { v: 1.5 }]) {
+    const classified = readFolderState(raw)
+    assert.equal(classified.mode, 'readonly', JSON.stringify(raw))
+    assert.equal(classified.reason, 'unrecognized', JSON.stringify(raw))
+  }
+})
+
+test('sanitizeFolderState drops invalid entries and never pollutes prototypes', () => {
+  const frozen = Object.freeze({
+    v: 1,
+    workspaces: Object.freeze({
+      w1: Object.freeze({
+        folders: Object.freeze([
+          { id: 'f-a', name: ' A ' },
+          { id: 'f-a', name: 'duplicate' },
+          { id: 'bad-id', name: 'no prefix' },
+          { id: 'f-empty', name: '   ' },
+          { id: 'f-long', name: 'x'.repeat(41) },
+          { id: 'f-nul', name: 'a\u0000b' },
+        ]),
+        assign: Object.freeze({ s1: 'f-a', s2: 'f-missing', ['__proto__']: 'f-a' }),
+      }),
+    }),
+  })
+  const state = sanitizeFolderState(frozen)
+  assert.deepEqual(foldersOf(state, 'w1'), {
+    folders: [{ id: 'f-a', name: 'A' }],
+    assign: { s1: 'f-a' },
+  })
+  assert.equal(Object.getPrototypeOf(state.workspaces), Object.prototype)
+  assert.equal({}.polluted, undefined)
+
+  const polluted = JSON.parse(
+    '{"v":1,"workspaces":{"__proto__":{"folders":[{"id":"f-x","name":"x"}]},"w":{}}}',
+  )
+  const clean = sanitizeFolderState(polluted)
+  assert.equal(Object.prototype.hasOwnProperty.call(clean.workspaces, '__proto__'), false)
+  assert.equal({}.polluted, undefined)
+})
+
+test('folderNameError validates trim, length, control characters, duplicates and reserved names', () => {
+  const folders = [{ id: 'f-1', name: 'Design' }]
+  assert.equal(folderNameError('', folders), 'empty')
+  assert.equal(folderNameError('   ', folders), 'empty')
+  assert.equal(folderNameError('x'.repeat(41), folders), 'tooLong')
+  assert.equal(folderNameError('a\u0000b', folders), 'invalid')
+  assert.equal(folderNameError('design', folders), 'duplicate')
+  assert.equal(folderNameError('design', folders, { exceptId: 'f-1' }), undefined)
+  assert.equal(folderNameError('全部', folders, { reserved: ['全部', 'All'] }), 'reserved')
+  assert.equal(folderNameError('All', folders, { reserved: ['全部', 'All'] }), 'reserved')
+  assert.equal(folderNameError('  New  ', folders), undefined)
+})
+
+test('createFolder caps a workspace and deleteFolder clears assignments', () => {
+  let state = FOLDER_INIT
+  for (let index = 0; index < FOLDER_MAX_PER_WORKSPACE; index += 1) {
+    state = createFolder(state, 'w1', { id: `f-${index}`, name: `Folder ${index}` })
+  }
+  assert.equal(foldersOf(state, 'w1').folders.length, FOLDER_MAX_PER_WORKSPACE)
+  assert.equal(createFolder(state, 'w1', { id: 'f-over', name: 'Over' }), state)
+  assert.equal(createFolder(state, 'w1', { id: 'f-bad', name: '   ' }), state)
+  assert.equal(createFolder(state, 'w1', { id: 'f-again', name: 'Folder 0' }), state)
+
+  state = assignSession(state, 'w1', 's1', 'f-0')
+  assert.equal(foldersOf(state, 'w1').assign.s1, 'f-0')
+  const deleted = deleteFolder(state, 'w1', 'f-0')
+  assert.deepEqual(foldersOf(deleted, 'w1').assign, {})
+  assert.equal(deleteFolder(deleted, 'w1', 'f-0'), deleted)
+
+  const assigned = assignSession(deleted, 'w1', 's1', 'f-1')
+  assert.equal(assignSession(assigned, 'w1', 's1', 'f-1'), assigned)
+  const cleared = assignSession(assigned, 'w1', 's1', null)
+  assert.equal(assignSession(cleared, 'w1', 's1', null), cleared)
+})
+
+test('moveFolder swaps adjacent folders and stops at boundaries', () => {
+  let state = FOLDER_INIT
+  for (const [id, name] of [['f-1', 'A'], ['f-2', 'B'], ['f-3', 'C']]) {
+    state = createFolder(state, 'w1', { id, name })
+  }
+  const moved = moveFolder(state, 'w1', 'f-3', 'up')
+  assert.deepEqual(foldersOf(moved, 'w1').folders.map(folder => folder.id), ['f-1', 'f-3', 'f-2'])
+  assert.equal(moveFolder(moved, 'w1', 'f-1', 'up'), moved)
+  assert.equal(moveFolder(moved, 'w1', 'f-2', 'down'), moved)
+  const down = moveFolder(moved, 'w1', 'f-1', 'down')
+  assert.deepEqual(foldersOf(down, 'w1').folders.map(folder => folder.id), ['f-3', 'f-1', 'f-2'])
+  assert.equal(moveFolder(down, 'w1', 'f-3', 'up'), down)
+})
+
+test('pruneAssign only drops assignments for missing members of one workspace', () => {
+  let state = FOLDER_INIT
+  state = createFolder(state, 'w1', { id: 'f-1', name: 'A' })
+  state = createFolder(state, 'w2', { id: 'f-2', name: 'B' })
+  state = assignSession(state, 'w1', 's1', 'f-1')
+  state = assignSession(state, 'w1', 's2', 'f-1')
+  state = assignSession(state, 'w2', 's3', 'f-2')
+  const pruned = pruneAssign(state, 'w1', ['s1'])
+  assert.deepEqual(foldersOf(pruned, 'w1').assign, { s1: 'f-1' })
+  assert.deepEqual(foldersOf(pruned, 'w2').assign, { s3: 'f-2' })
+  assert.equal(pruneAssign(pruned, 'w1', ['s1']), pruned)
+})
+
+test('buildFolderView buckets sessions and keeps empty folders/unfiled stable', () => {
+  const entry = {
+    folders: [{ id: 'f-1', name: 'A' }, { id: 'f-2', name: 'B' }],
+    assign: { s2: 'f-2', s3: 'missing' },
+  }
+  const view = buildFolderView({
+    groupKey: 'w1', sessionIds: ['s1', 's2', 's3'], entry, activeId: 'f-2',
+  })
+  assert.equal(view.hasFolders, true)
+  assert.deepEqual(view.chips.map(chip => ({ id: chip.id, count: chip.count })), [
+    { id: FOLDER_ALL, count: 3 },
+    { id: 'f-1', count: 0 },
+    { id: 'f-2', count: 1 },
+    { id: FOLDER_UNFILED, count: 2 },
+  ])
+  assert.deepEqual(view.sections.map(section => ({ key: section.key, sessions: section.sessions })), [
+    { key: 'w1:f:f-1', sessions: [] },
+    { key: 'w1:f:f-2', sessions: ['s2'] },
+    { key: 'w1:u', sessions: ['s1', 's3'] },
+  ])
+  assert.deepEqual(view.active, { key: 'w1:f:f-2', sessions: ['s2'] })
+
+  const fallback = buildFolderView({
+    groupKey: 'w1', sessionIds: ['s1'], entry, activeId: 'f-gone',
+  })
+  assert.equal(fallback.activeId, FOLDER_ALL)
+  assert.equal(fallback.active, null)
+  assert.equal(buildFolderView({
+    groupKey: 'w1', sessionIds: [], entry: { folders: [], assign: {} },
+  }), null)
+})
+
+test('buildFolderViews returns null for groups without folders and keys sections by group', () => {
+  let state = createFolder(FOLDER_INIT, 'w1', { id: 'f-1', name: 'A' })
+  state = assignSession(state, 'w1', 's1', 'f-1')
+  const groups = [
+    { key: 'w1', workspaceId: 'w1', sessions: ['s1', 's2'] },
+    { key: '', workspaceId: undefined, sessions: ['s3'] },
+    { key: 'w2', workspaceId: 'w2', sessions: [] },
+  ]
+  const views = buildFolderViews({ groups, state, active: { w1: 'f-1' } })
+  assert.deepEqual(Object.keys(views), ['w1', '', 'w2'])
+  assert.equal(views[''], null)
+  assert.equal(views.w2, null)
+  assert.deepEqual(views.w1.active, { key: 'w1:f:f-1', sessions: ['s1'] })
+  assert.equal(views.w1.sections.at(-1).key, 'w1:u')
+})
+
+test('moveAnchor resolves a folder-scoped order', () => {
+  const order = ['s1', 's2', 's3']
+  assert.equal(moveAnchor({ order, movingId: 's3', targetId: 's1', half: 'before' }), 's1')
+  assert.equal(moveAnchor({ order, movingId: 's1', targetId: 's3', half: 'after' }), null)
+  assert.equal(moveAnchor({ order, movingId: 's2', targetId: 's2', half: 'before' }), undefined)
+})
+
+test('workspaceOfSession takes the first workspace that accounts for a session', () => {
+  const map = workspaceOfSession([
+    { workspaceId: 'w1', sessionIds: ['s1', 's2'] },
+    { workspaceId: 'w2', sessionIds: ['s2', 's3'] },
+  ])
+  assert.deepEqual([...map], [['s1', 'w1'], ['s2', 'w1'], ['s3', 'w2']])
+  assert.deepEqual([...workspaceOfSession({ items: [{ workspaceId: 'w1', sessionIds: ['s1'] }] })], [['s1', 'w1']])
+  assert.deepEqual([...workspaceOfSession(undefined)], [])
 })
 
 test('relativeTime buckets match the host-wide shared bucket set', () => {

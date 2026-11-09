@@ -1,5 +1,5 @@
 /**
- * Static and packaging contract of the 0.1.7 client bundle.
+ * Static and packaging contract of the 0.2.0 client bundle.
  *
  * The previous revision asserted a DOM-projection implementation. This one
  * asserts the shape the Host actually consumes: one module-loader registration
@@ -18,7 +18,7 @@ const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf
 
 test('identity is one thing across package, client module id and bundle name', () => {
   assert.equal(pkg.name, '@pianner/dsh-session-manager')
-  assert.equal(pkg.version, '0.1.7')
+  assert.equal(pkg.version, '0.2.0')
   assert.equal(pkg.exports['./client'], './client/client.js')
   assert.equal(pkg.dsh.client.platform, 'web')
   assert.ok(code.includes(`id: "@pianner/dsh-session-manager"`))
@@ -336,4 +336,54 @@ test('the shipped bundle matches a fresh build of the authored sources', () => {
   const coreStart = code.indexOf('function snapshotOf(store)')
   assert.ok(coreStart > bodyStart, 'core must be inlined inside the factory')
   assert.ok(code.indexOf('const React = require(\'react\')') > coreStart, 'core precedes the view body')
+})
+
+test('folder state uses its own versioned key and lives on the injection face', () => {
+  assert.match(code, /dsh-plugin:dsh-session-manager:folders/)
+  assert.match(code, /readFolderState\(/)
+  assert.match(code, /buildFolderViews\(/)
+  assert.match(code, /folderStore: folders,/)
+  assert.match(code, /folderActions,/)
+  // The bundle still never names a Web Storage API; persistence stays behind
+  // the store seat.
+  for (const forbidden of ['localStorage', 'sessionStorage', 'indexedDB', 'BroadcastChannel']) {
+    assert.equal(code.includes(forbidden), false, forbidden)
+  }
+})
+
+test('folder sections are not workspace drag groups and their header is not sticky', () => {
+  // A nested Section would carry `data-dsm-group` (the workspace drag target)
+  // and a sticky header; the folder block must carry neither.
+  assert.match(code, /className: 'dsm-folder-group', 'data-dsm-folder': section\.key/)
+  assert.equal(/\.dsm-folder-row\{[^}]*position:sticky/.test(code), false)
+  assert.match(code, /\.dsm-folder-mark\{[^}]*border-radius:50%/)
+})
+
+test('the folder renderer is wired into the row dependency table and the declaration stays minimal', () => {
+  assert.match(code, /folderEntries, folderReadonly, move, now,/)
+  assert.match(code, /const inject = \['slots', 'sessions', 'workspaces', 'uiWorkspace', 'locale'\]/)
+  assert.equal(pkg.dsh.client.inject.length, 0)
+})
+
+test('the first folder is creatable from the workspace header, not only a session menu', () => {
+  assert.match(code, /className: 'dsm-workspace-action dsm-workspace-folder'/)
+  assert.match(code, /onNewFolder/)
+  assert.match(code, /\.dsm-workspace-folder\{position:relative;opacity:1\}/)
+  assert.match(code, /\.dsm-workspace-folder::after\{content:"\+"/)
+  // The tree has no chip strip, so the header seat stays after the first folder.
+  assert.match(code, /onNewFolder: group\.workspaceId === undefined \|\| folderReadonly/)
+  assert.match(code, /openCreateFolder\(group\.workspaceId\)/)
+})
+
+test('folder tree headers stay light and there is no duplicate chip row', () => {
+  // One navigation model: workspace -> collapsible folder sections -> rows.
+  // The old chip strip + full section header duplicated every folder name.
+  assert.equal(code.includes('dsm-folder-strip'), false)
+  assert.equal(code.includes('dsm-folder-chip'), false)
+  assert.equal(code.includes('dsm-folder-new'), false)
+  assert.equal(code.includes('IconFolderOpenOutlineRegular'), false)
+  assert.match(code, /\.dsm-folder-header\{[^}]*height:28px/)
+  assert.match(code, /\.dsm-folder-header\{[^}]*padding-inline-start:38px/)
+  assert.match(code, /\.dsm-folder-header\{[^}]*font-size:14px/)
+  assert.match(code, /\.dsm-folder-row \.dsm-folder-count\{margin-inline-start:6px\}/)
 })
