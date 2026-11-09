@@ -18,6 +18,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 
 const source = process.env.DSH_SOURCE ? resolve(process.env.DSH_SOURCE) : undefined
@@ -76,10 +77,10 @@ function workspacePackages() {
 test('the claimed DSH release is the checkout under test', { skip }, () => {
   // The declared range must *cover* the release we verified against.
   const range = pkg.peerDependencies['@deepseek-ai/dsh-client-ui-slots']
-  assert.match(range, /^>=0\.2\.0-alpha\.0 <0\.3\.0$/)
+  assert.match(range, /^>=0\.2\.0-alpha\.0 <0\.3\.0-0$/)
   const slots = workspacePackages().get('@deepseek-ai/dsh-client-ui-slots')
   assert.ok(slots, 'the checkout must contain the slots package')
-  assert.equal(slots.manifest.version, '0.2.1-alpha.5')
+  assert.equal(slots.manifest.version, '0.2.2-rc.1')
   // A range that covers the release must also be the version we write down.
   assert.match(pkg.peerDependencies['@deepseek-ai/dsh-client-ui-slots'], /0\.2\.0-alpha\.0/)
 })
@@ -104,8 +105,8 @@ test('every peer range accepts the checkout it claims to support', { skip }, () 
       assert.match(found.manifest.version, /^4\./, 'cordis major moved')
       continue
     }
-    assert.equal(found.manifest.version, '0.2.1-alpha.5', `${name} version moved`)
-    assert.equal(range, '>=0.2.0-alpha.0 <0.3.0', `${name} range changed`)
+    assert.equal(found.manifest.version, '0.2.2-rc.1', `${name} version moved`)
+    assert.equal(range, '>=0.2.0-alpha.0 <0.3.0-0', `${name} range changed`)
   }
 })
 
@@ -246,4 +247,26 @@ test('the locale registration shape we use is the documented one', { skip }, () 
   assert.match(locale, /register\(/)
   assert.match(code, /ctx\.locale\.register\(NS, \{ zh, en \}\)/)
   assert.match(code, /locale: NS/)
+})
+
+test('the folder design host assumptions still hold', { skip }, () => {
+  const menu = read('packages/client/ui-primitives/src/Menu.tsx')
+  assert.match(menu, /submenu\?: readonly MenuEntry\[\]/)
+  const icons = read('packages/client/ui-primitives/src/icons/index.tsx')
+  for (const icon of ['IconCheckOutlineRegular', 'IconFolderOpenOutlineRegular']) {
+    assert.ok(icons.includes(icon), `${icon} is gone`)
+  }
+  const store = read('packages/client/store/src/index.ts')
+  assert.match(store, /persist\?: \{ name: string \}/)
+  assert.match(store, /localStorage\.setItem\(name, JSON\.stringify\(state\)\)/)
+  const compatibility = read('packages/boot/app-boot/src/plugin-compatibility.ts')
+  assert.match(compatibility, /includePrerelease: true/)
+})
+
+test('the peer range covers the checkout and excludes the next minor prerelease', { skip }, () => {
+  const requireFromDsh = createRequire(join(source, 'package.json'))
+  const semver = requireFromDsh('semver')
+  const range = pkg.peerDependencies['@deepseek-ai/dsh-client-ui-slots']
+  assert.equal(semver.satisfies('0.2.2-rc.1', range, { includePrerelease: true }), true)
+  assert.equal(semver.satisfies('0.3.0-alpha.0', range, { includePrerelease: true }), false)
 })

@@ -683,6 +683,455 @@ export function splitPinned(input) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Virtual subfolders
+ *
+ * The Host has no session-level folder concept: `SessionSummary` carries no
+ * folder/tag/group field and `WorkspaceView` cannot nest. A subfolder is
+ * therefore plugin-owned presentation data, never a second copy of a host
+ * value. It is stored as one versioned JSON value; every function below is a
+ * pure projection/update so the model can be tested without a browser.
+ *
+ * Invariants live in `docs/DESIGN-0.2.0.md` §3.3. In particular: folder ids
+ * start with `f-`, names are trimmed to 1..40 code units, assignments only
+ * point at a folder of the same workspace, and an unknown schema version is
+ * read-only so an older plugin cannot overwrite a newer one.
+ * ------------------------------------------------------------------ */
+
+/** Current persisted folder schema version. */
+export const FOLDER_SCHEMA_VERSION = 1
+/** Chip id for the "all folders" view. */
+export const FOLDER_ALL = '__all__'
+/** Chip id for sessions without an assignment. */
+export const FOLDER_UNFILED = '__unfiled__'
+/** Maximum folder name length, in UTF-16 code units. */
+export const FOLDER_NAME_MAX = 40
+/** Maximum folders per workspace; keeps the row submenu inside one screen. */
+export const FOLDER_MAX_PER_WORKSPACE = 20
+
+/** The immutable empty state, also the store's initial value. */
+export const FOLDER_INIT = Object.freeze({
+  v: FOLDER_SCHEMA_VERSION,
+  workspaces: Object.freeze({}),
+})
+
+/** Keys that must never become object keys read from persisted JSON. */
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+/** Control characters are not valid in a display name. */
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
+
+/**
+ * Whether a value is a plain JSON object (not null, not an array).
+ * @param {unknown} value - candidate.
+ * @returns {boolean} true for plain objects.
+ */
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Whether a key read from persisted JSON is safe to use as an object key.
+ * @param {unknown} key - candidate key.
+ * @returns {boolean} true when the key is a non-empty safe string.
+ */
+function isSafeKey(key) {
+  return typeof key === 'string' && key !== '' && !UNSAFE_KEYS.has(key)
+}
+
+/**
+ * Whether a value is a v1 folder state.
+ * @param {unknown} state - candidate state.
+ * @returns {boolean} true for `{ v: 1, workspaces: object }`.
+ */
+function isFolderState(state) {
+  return isPlainObject(state) && state.v === FOLDER_SCHEMA_VERSION && isPlainObject(state.workspaces)
+}
+
+/**
+ * The member set of a workspace, accepting either an array or a Set.
+ * @param {Iterable<string>|undefined} memberIds - workspace session ids.
+ * @returns {Set<string>} the ids.
+ */
+function memberSet(memberIds) {
+  if (memberIds instanceof Set) return new Set(memberIds)
+  return new Set(Array.isArray(memberIds) ? memberIds.filter(id => typeof id === 'string') : [])
+}
+
+/**
+ * Normalize one persisted folder entry.
+ * @param {unknown} value - candidate folder.
+ * @returns {{id: string, name: string}|undefined} a valid folder, or undefined.
+ */
+function sanitizeFolder(value) {
+  if (!isPlainObject(value)) return undefined
+  if (typeof value.id !== 'string' || !value.id.startsWith('f-')) return undefined
+  if (typeof value.name !== 'string') return undefined
+  const name = value.name.trim()
+  if (name === '' || name.length > FOLDER_NAME_MAX || CONTROL_CHARACTERS.test(name)) return undefined
+  return { id: value.id, name }
+}
+
+/**
+ * Build a sanitized v1 state from an arbitrary JSON value.
+ *
+ * The input is never mutated. Duplicate folder ids, invalid names, unsafe
+ * keys and assignments to missing folders are dropped. Empty workspace
+ * records are omitted so repeated writes cannot grow the value without bound.
+ *
+ * @param {unknown} raw - parsed persisted value.
+ * @returns {object} a v1 state (possibly {@link FOLDER_INIT}).
+ */
+export function sanitizeFolderState(raw) {
+  if (!isPlainObject(raw) || raw.v !== FOLDER_SCHEMA_VERSION) return FOLDER_INIT
+  const workspaces = {}
+  for (const [workspaceId, workspace] of Object.entries(isPlainObject(raw.workspaces) ? raw.workspaces : {})) {
+    if (!isSafeKey(workspaceId) || !isPlainObject(workspace)) continue
+    const folders = []
+    const seen = new Set()
+    for (const candidate of Array.isArray(workspace.folders) ? workspace.folders : []) {
+      const folder = sanitizeFolder(candidate)
+      if (!folder || seen.has(folder.id)) continue
+      seen.add(folder.id)
+      folders.push(folder)
+    }
+    const assign = {}
+    for (const [sessionId, folderId] of Object.entries(isPlainObject(workspace.assign) ? workspace.assign : {})) {
+      if (!isSafeKey(sessionId) || typeof folderId !== 'string' || !seen.has(folderId)) continue
+      assign[sessionId] = folderId
+    }
+    if (folders.length > 0 || Object.keys(assign).length > 0) workspaces[workspaceId] = { folders, assign }
+  }
+  return Object.keys(workspaces).length === 0 ? FOLDER_INIT : { v: FOLDER_SCHEMA_VERSION, workspaces }
+}
+
+/**
+ * Classify a store snapshot before rendering or writing.
+ *
+ * `empty` and `ok` are writable; `readonly` must not be written at all. A
+ * future integer version is treated as newer so an older plugin cannot
+ * destroy it; anything else is unrecognized (array, string, missing `v`, ...).
+ *
+ * @param {unknown} raw - store snapshot.
+ * @returns {{ mode: 'empty'|'ok'|'readonly', reason?: 'newer'|'unrecognized', state: object }} classification.
+ */
+export function readFolderState(raw) {
+  if (raw === undefined || raw === null || raw === FOLDER_INIT) return { mode: 'empty', state: FOLDER_INIT }
+  if (!isPlainObject(raw)) return { mode: 'readonly', reason: 'unrecognized', state: FOLDER_INIT }
+  if (raw.v === FOLDER_SCHEMA_VERSION) return { mode: 'ok', state: sanitizeFolderState(raw) }
+  if (Number.isInteger(raw.v) && raw.v > FOLDER_SCHEMA_VERSION) return { mode: 'readonly', reason: 'newer', state: FOLDER_INIT }
+  return { mode: 'readonly', reason: 'unrecognized', state: FOLDER_INIT }
+}
+
+/**
+ * Read one workspace's folders and assignments as immutable copies.
+ * @param {object} state - sanitized v1 state.
+ * @param {string} workspaceId - host workspace id.
+ * @returns {{ folders: Array<{id: string, name: string}>, assign: Record<string, string> }} the workspace entry.
+ */
+export function foldersOf(state, workspaceId) {
+  const entry = isSafeKey(workspaceId) && isPlainObject(state?.workspaces)
+    ? state.workspaces[workspaceId]
+    : undefined
+  const folders = []
+  const seen = new Set()
+  for (const candidate of Array.isArray(entry?.folders) ? entry.folders : []) {
+    const folder = sanitizeFolder(candidate)
+    if (!folder || seen.has(folder.id)) continue
+    seen.add(folder.id)
+    folders.push(folder)
+  }
+  const assign = {}
+  for (const [sessionId, folderId] of Object.entries(isPlainObject(entry?.assign) ? entry.assign : {})) {
+    if (!isSafeKey(sessionId) || typeof folderId !== 'string' || !seen.has(folderId)) continue
+    assign[sessionId] = folderId
+  }
+  return { folders, assign }
+}
+
+/**
+ * Validate a folder name against the current workspace.
+ * @param {unknown} name - proposed name.
+ * @param {readonly object[]} folders - sibling folders.
+ * @param {{ reserved?: readonly string[], exceptId?: string }} [options] - reserved labels and the renamed folder.
+ * @returns {'empty'|'tooLong'|'invalid'|'duplicate'|'reserved'|undefined} the error code, or undefined.
+ */
+export function folderNameError(name, folders, options = {}) {
+  const trimmed = typeof name === 'string' ? name.trim() : ''
+  if (trimmed === '') return 'empty'
+  if (trimmed.length > FOLDER_NAME_MAX) return 'tooLong'
+  if (CONTROL_CHARACTERS.test(trimmed)) return 'invalid'
+  const lower = trimmed.toLocaleLowerCase()
+  const reserved = Array.isArray(options.reserved) ? options.reserved : []
+  if (reserved.some(value => typeof value === 'string' && value.toLocaleLowerCase() === lower)) return 'reserved'
+  const exceptId = options.exceptId
+  if ((folders || []).some(folder => folder && folder.id !== exceptId
+    && typeof folder.name === 'string' && folder.name.toLocaleLowerCase() === lower)) return 'duplicate'
+  return undefined
+}
+
+/**
+ * Apply a mutation to one workspace entry, cloning only the changed path.
+ *
+ * The mutator returns `true` when it changed something. An unchanged draft is
+ * discarded and the original state reference is returned, which lets callers
+ * skip a store write entirely.
+ *
+ * @param {object} state - v1 state.
+ * @param {string} workspaceId - target workspace.
+ * @param {(draft: { folders: object[], assign: Record<string, string> }) => boolean} mutate - editor.
+ * @returns {object} the new state, or the input reference when nothing changed.
+ */
+function withWorkspace(state, workspaceId, mutate) {
+  if (!isFolderState(state) || !isSafeKey(workspaceId)) return state
+  const current = state.workspaces[workspaceId]
+  const draft = {
+    folders: Array.isArray(current?.folders) ? current.folders.map(folder => ({ id: folder.id, name: folder.name })) : [],
+    assign: isPlainObject(current?.assign) ? { ...current.assign } : {},
+  }
+  if (mutate(draft) !== true) return state
+  const workspaces = { ...state.workspaces }
+  if (draft.folders.length === 0 && Object.keys(draft.assign).length === 0) delete workspaces[workspaceId]
+  else workspaces[workspaceId] = draft
+  return { v: FOLDER_SCHEMA_VERSION, workspaces }
+}
+
+/**
+ * Create one folder in a workspace.
+ * @param {object} state - v1 state.
+ * @param {string} workspaceId - target workspace.
+ * @param {{ id: string, name: string }} input - stable id and display name.
+ * @returns {object} the new state, or the input reference on any validation failure.
+ */
+export function createFolder(state, workspaceId, input = {}) {
+  if (!isFolderState(state) || !isSafeKey(workspaceId)) return state
+  const { id, name } = input
+  if (typeof id !== 'string' || !id.startsWith('f-')) return state
+  const entry = foldersOf(state, workspaceId)
+  if (entry.folders.length >= FOLDER_MAX_PER_WORKSPACE) return state
+  if (entry.folders.some(folder => folder.id === id)) return state
+  if (folderNameError(name, entry.folders) !== undefined) return state
+  const trimmed = name.trim()
+  return withWorkspace(state, workspaceId, (draft) => {
+    draft.folders.push({ id, name: trimmed })
+    return true
+  })
+}
+
+/**
+ * Rename one folder without changing its id.
+ * @param {object} state - v1 state.
+ * @param {string} workspaceId - target workspace.
+ * @param {string} folderId - folder to rename.
+ * @param {string} name - new display name.
+ * @returns {object} the new state, or the input reference when unchanged/invalid.
+ */
+export function renameFolder(state, workspaceId, folderId, name) {
+  if (!isFolderState(state)) return state
+  const entry = foldersOf(state, workspaceId)
+  const index = entry.folders.findIndex(folder => folder.id === folderId)
+  if (index === -1) return state
+  if (folderNameError(name, entry.folders, { exceptId: folderId }) !== undefined) return state
+  const trimmed = name.trim()
+  if (entry.folders[index].name === trimmed) return state
+  return withWorkspace(state, workspaceId, (draft) => {
+    draft.folders[index] = { id: folderId, name: trimmed }
+    return true
+  })
+}
+
+/**
+ * Delete one folder and every assignment pointing at it.
+ * Sessions are not touched: they simply become unfiled.
+ * @param {object} state - v1 state.
+ * @param {string} workspaceId - target workspace.
+ * @param {string} folderId - folder to delete.
+ * @returns {object} the new state, or the input reference when absent.
+ */
+export function deleteFolder(state, workspaceId, folderId) {
+  if (!isFolderState(state)) return state
+  const entry = foldersOf(state, workspaceId)
+  if (!entry.folders.some(folder => folder.id === folderId)) return state
+  return withWorkspace(state, workspaceId, (draft) => {
+    draft.folders = draft.folders.filter(folder => folder.id !== folderId)
+    for (const [sessionId, assigned] of Object.entries(draft.assign)) {
+      if (assigned === folderId) delete draft.assign[sessionId]
+    }
+    return true
+  })
+}
+
+/**
+ * Move one folder one slot up or down.
+ * @param {object} state - v1 state.
+ * @param {string} workspaceId - target workspace.
+ * @param {string} folderId - folder to move.
+ * @param {'up'|'down'} direction - movement direction.
+ * @returns {object} the new state, or the input reference at a boundary/unknown folder.
+ */
+export function moveFolder(state, workspaceId, folderId, direction) {
+  if (!isFolderState(state)) return state
+  const entry = foldersOf(state, workspaceId)
+  const index = entry.folders.findIndex(folder => folder.id === folderId)
+  if (index === -1) return state
+  const next = direction === 'up' ? index - 1 : direction === 'down' ? index + 1 : index
+  if (next < 0 || next >= entry.folders.length || next === index) return state
+  return withWorkspace(state, workspaceId, (draft) => {
+    const moved = draft.folders[index]
+    draft.folders[index] = draft.folders[next]
+    draft.folders[next] = moved
+    return true
+  })
+}
+
+/**
+ * Assign one session to a folder, or to unfiled with `null`.
+ * @param {object} state - v1 state.
+ * @param {string} workspaceId - owning workspace.
+ * @param {string} sessionId - host session id.
+ * @param {string|null|undefined} folderId - target folder, or null/undefined for unfiled.
+ * @returns {object} the new state, or the input reference when unchanged/invalid.
+ */
+export function assignSession(state, workspaceId, sessionId, folderId) {
+  if (!isFolderState(state) || !isSafeKey(sessionId)) return state
+  const entry = foldersOf(state, workspaceId)
+  const target = folderId === null || folderId === undefined ? null : String(folderId)
+  if (target !== null && !entry.folders.some(folder => folder.id === target)) return state
+  const current = entry.assign[sessionId] ?? null
+  if (current === target) return state
+  return withWorkspace(state, workspaceId, (draft) => {
+    if (target === null) delete draft.assign[sessionId]
+    else draft.assign[sessionId] = target
+    return true
+  })
+}
+
+/**
+ * Drop assignments for sessions that are no longer workspace members.
+ *
+ * Called only when the Host's workspace snapshot is ready, so a cold start
+ * cannot mistake "not listed yet" for "deleted". Archived sessions remain
+ * members and keep their assignment.
+ *
+ * @param {object} state - v1 state.
+ * @param {string} workspaceId - workspace to prune.
+ * @param {Iterable<string>} memberIds - current `workspace.sessionIds`.
+ * @returns {object} the new state, or the input reference when nothing was stale.
+ */
+export function pruneAssign(state, workspaceId, memberIds) {
+  if (!isFolderState(state)) return state
+  const entry = foldersOf(state, workspaceId)
+  const members = memberSet(memberIds)
+  const next = {}
+  let changed = false
+  for (const [sessionId, folderId] of Object.entries(entry.assign)) {
+    if (members.has(sessionId)) next[sessionId] = folderId
+    else changed = true
+  }
+  if (!changed) return state
+  return withWorkspace(state, workspaceId, (draft) => {
+    draft.assign = next
+    return true
+  })
+}
+
+/**
+ * Map every session to the first workspace that accounts for it.
+ * @param {readonly object[]|{ items?: readonly object[] }} workspaces - workspace list/snapshot.
+ * @returns {Map<string, string>} session id -> workspace id.
+ */
+export function workspaceOfSession(workspaces) {
+  const items = Array.isArray(workspaces)
+    ? workspaces
+    : Array.isArray(workspaces?.items) ? workspaces.items : []
+  const map = new Map()
+  for (const workspace of items) {
+    if (!workspace || typeof workspace.workspaceId !== 'string') continue
+    for (const sessionId of Array.isArray(workspace.sessionIds) ? workspace.sessionIds : []) {
+      if (typeof sessionId === 'string' && !map.has(sessionId)) map.set(sessionId, workspace.workspaceId)
+    }
+  }
+  return map
+}
+
+/**
+ * Derive one workspace group's chips, folder sections and active view.
+ *
+ * `sessionIds` must already be the group's visible, ordered members (archive
+ * filter, blank filter, pinned lift and orderBy applied). Counts therefore
+ * match what the region would render. Empty folders and an empty unfiled
+ * section are kept: they are stable drop targets and management seats.
+ *
+ * `active` is `null` in the "all" view, so callers cannot accidentally render
+ * a second copy of the full list.
+ *
+ * @param {{ groupKey: string, sessionIds: readonly string[], entry: {folders: readonly object[], assign: Readonly<Record<string, string>>}, activeId?: string }} input - group inputs.
+ * @returns {object|null} the view, or null when the workspace has no folders.
+ */
+export function buildFolderView(input) {
+  const folders = Array.isArray(input?.entry?.folders) ? input.entry.folders : []
+  if (folders.length === 0) return null
+  const groupKey = typeof input.groupKey === 'string' ? input.groupKey : String(input.groupKey ?? '')
+  const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds : []
+  const assign = isPlainObject(input.entry?.assign) ? input.entry.assign : {}
+  const buckets = new Map(folders.map(folder => [folder.id, []]))
+  const unfiled = []
+  for (const sessionId of sessionIds) {
+    const folderId = typeof sessionId === 'string' ? assign[sessionId] : undefined
+    if (typeof folderId === 'string' && buckets.has(folderId)) buckets.get(folderId).push(sessionId)
+    else unfiled.push(sessionId)
+  }
+  const chips = [
+    { id: FOLDER_ALL, kind: 'all', count: sessionIds.length },
+    ...folders.map(folder => ({ id: folder.id, kind: 'folder', name: folder.name, count: buckets.get(folder.id).length })),
+    { id: FOLDER_UNFILED, kind: 'unfiled', count: unfiled.length },
+  ]
+  const sections = [
+    ...folders.map(folder => ({
+      key: `${groupKey}:f:${folder.id}`,
+      id: folder.id,
+      kind: 'folder',
+      name: folder.name,
+      sessions: buckets.get(folder.id),
+    })),
+    { key: `${groupKey}:u`, id: FOLDER_UNFILED, kind: 'unfiled', sessions: unfiled },
+  ]
+  const activeId = input.activeId === FOLDER_UNFILED || folders.some(folder => folder.id === input.activeId)
+    ? input.activeId
+    : FOLDER_ALL
+  const active = activeId === FOLDER_ALL
+    ? null
+    : activeId === FOLDER_UNFILED
+      ? { key: `${groupKey}:u`, sessions: unfiled }
+      : { key: `${groupKey}:f:${activeId}`, sessions: buckets.get(activeId) }
+  return { hasFolders: true, activeId, chips, sections, active }
+}
+
+/**
+ * Derive every workspace group's folder view in one pass.
+ * @param {{ groups?: readonly object[], state: object, active?: Readonly<Record<string, string>> }} input - tree + folder state + active ids.
+ * @returns {Record<string, object|null>} group key -> view (null when the group has no folders or no workspace).
+ */
+export function buildFolderViews(input) {
+  const views = {}
+  const groups = Array.isArray(input?.groups) ? input.groups : []
+  const active = isPlainObject(input?.active) ? input.active : {}
+  for (const group of groups) {
+    if (!group || typeof group.key !== 'string') continue
+    if (typeof group.workspaceId !== 'string') {
+      views[group.key] = null
+      continue
+    }
+    const entry = foldersOf(input.state, group.workspaceId)
+    views[group.key] = buildFolderView({
+      groupKey: group.key,
+      sessionIds: Array.isArray(group.sessions) ? group.sessions : [],
+      entry,
+      activeId: Object.prototype.hasOwnProperty.call(active, group.key) ? active[group.key] : undefined,
+    })
+  }
+  return views
+}
+
+/* ------------------------------------------------------------------ *
  * Paging and search
  *
  * Both are the Host's own semantics, restated as pure functions because this

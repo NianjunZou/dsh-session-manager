@@ -18,3 +18,6 @@ playwright-report/
 
 # Maintainer-local browser harness and app inspector (vendored React, local ports)
 dev/
+
+# Local generated-bundle backups (never shipped)
+client/*.bak-*

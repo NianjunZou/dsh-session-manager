@@ -46,6 +46,12 @@ session order are always read from and written through host services. See
 - **Priority labels P1–P4**, coloured in four weights of one accent: P1 solid with inverted text,
   P2 45% tint, P3 22% tint, P4 grey. Status hues (red/amber/green/neutral) stay the status
   vocabulary's own. State is persisted through the official `dsh-client-store`.
+- **Virtual subfolders (0.2.0)**: up to 20 one-level folders per workspace, assigned from the row
+  menu; the project group switches between All / each folder / Unfiled, and the All view groups
+  sessions into folder sections. Folders are presentation-only: nothing is written to disk or to
+  host order, and the data lives in the namespaced plugin key
+  `dsh-plugin:dsh-session-manager:folders`. Disable the plugin and the native list is complete;
+  re-enable it and the folders return.
 - **Two folding sections with sticky headers** ("pinned" and "project sessions", the latter folds
   every workspace group at once). Section bands, directory rows and session rows are three
   visually distinct levels; rows hanging straight off a heading keep a shallow indent, matching
@@ -59,7 +65,7 @@ session order are always read from and written through host services. See
 
 ## Compatibility
 
-Targets **`dsh-v0.2.1-alpha.5`**. While enabled, the official browsing cell is shadowed, so the five
+Verified against **`dsh-v0.2.2-rc.1`**. While enabled, the official browsing cell is shadowed, so the five
 child slots it declares (session menu items, row hover buttons, the schedule mark/hover seats and
 the inline directory flow) do not render; they return as soon as the plugin is disabled. The inline
 flow's capability is preserved through the `uiWorkspace.pickDirectory` service call. See the
@@ -74,8 +80,8 @@ Chinese README for the full table.
 
 ## Install
 
-0.1.7 is what this repo builds; a development profile can still point at it through a `link:`
-dependency:
+0.2.0 is what this repo builds (not yet published); a development profile can still point at it
+through a `link:` dependency:
 
 ```bash
 npm run build                          # regenerate client/client.js
@@ -83,7 +89,7 @@ npm run build                          # regenerate client/client.js
 ```
 
 The publish checklist is in [`docs/DEPLOY.md`](docs/DEPLOY.md); the acceptance record and the
-remaining verification gaps are in [`docs/ACCEPTANCE-0.1.7.md`](docs/ACCEPTANCE-0.1.7.md).
+remaining verification gaps are in [`docs/ACCEPTANCE-0.2.0.md`](docs/ACCEPTANCE-0.2.0.md).
 
 ## Develop & verify
 
@@ -97,7 +103,7 @@ DSH_SOURCE=~/deepseek-harness npm run verify:align   # slot / Menu / StateDot / 
 `client/client.js` is generated but committed, so the published package needs no consumer build.
 Browser-level interaction acceptance runs through a maintainer-local harness (real React, real DOM,
 real mouse input) that is not distributed with the repo; the itemised results are in
-[`docs/ACCEPTANCE-0.1.7.md`](docs/ACCEPTANCE-0.1.7.md).
+[`docs/ACCEPTANCE-0.2.0.md`](docs/ACCEPTANCE-0.2.0.md).
 
 ## Scope & limitations
 

@@ -120,6 +120,7 @@ function loadBundle() {
   let registration = null
   const styleEl = { setAttribute() {}, remove() { this.removed = true }, textContent: '' }
   const documentListeners = new Set()
+  const windowListeners = new Map()
   const clipboardWrites = []
   const sandbox = {
     console,
@@ -138,6 +139,12 @@ function loadBundle() {
       // one render is one request.
       setTimeout: (callback) => { callback(); return 1 },
       clearTimeout: () => {},
+      addEventListener(type, listener) {
+        const bucket = windowListeners.get(type) ?? new Set()
+        bucket.add(listener)
+        windowListeners.set(type, bucket)
+      },
+      removeEventListener(type, listener) { windowListeners.get(type)?.delete(listener) },
       __ModuleLoader__: { load(options) { registration = options } },
     },
   }
@@ -162,7 +169,7 @@ function loadBundle() {
     }
     throw new Error(`unexpected require(${spec})`)
   })
-  return { exports, registration, react, styleEl, documentListeners, clipboardWrites }
+  return { exports, registration, react, styleEl, documentListeners, windowListeners, clipboardWrites }
 }
 
 /** Fixtures: two workspaces, a pinned session, a running subtree and a failed job. */
@@ -193,7 +200,7 @@ function fixtures() {
 
 /** Build a fake client context and apply the plugin to it. */
 function applyPlugin({ withJobs = true } = {}) {
-  const { exports, react, styleEl, documentListeners, clipboardWrites } = loadBundle()
+  const { exports, react, styleEl, documentListeners, windowListeners, clipboardWrites } = loadBundle()
   const calls = []
   const effects = []
   let registered = null
@@ -256,7 +263,7 @@ function applyPlugin({ withJobs = true } = {}) {
   assert.ok(registered, 'apply must register the sidebar browsing region')
   const injected = registered.options.inject()
   return {
-    calls, clipboardWrites, effects, registered, injected, exports, react, styleEl, documentListeners, watched,
+    calls, clipboardWrites, effects, registered, injected, exports, react, styleEl, documentListeners, windowListeners, watched,
     setPickResult(result) { pickResult = result },
     setSearchResult(result) { searchResult = result },
   }
@@ -285,6 +292,36 @@ function rowsOf(tree) {
   return rows
 }
 
+/** Every node carrying one class name, in render order. */
+function nodesWithClass(tree, className) {
+  const nodes = []
+  walk(tree, node => { if (node.props?.className === className) nodes.push(node) })
+  return nodes
+}
+
+/** Nodes carrying `className` as one token among others. */
+function nodesWithClassToken(tree, className) {
+  const nodes = []
+  walk(tree, node => {
+    const value = node.props?.className
+    if (typeof value === 'string' && value.split(/\s+/).includes(className)) nodes.push(node)
+  })
+  return nodes
+}
+
+/** A v1 folder fixture: two folders on w1 and one unfiled member. */
+function folderState() {
+  return {
+    v: 1,
+    workspaces: {
+      w1: {
+        folders: [{ id: 'f-1', name: 'Design' }, { id: 'f-2', name: 'Triage' }],
+        assign: { 'w1-a': 'f-1', 'w1-b': 'f-2' },
+      },
+    },
+  }
+}
+
 /**
  * Render the registered region with the fixture host snapshots.
  * @param {object} applied - capture returned by {@link applyPlugin}.
@@ -311,8 +348,10 @@ function renderRegion(applied, overrides = {}) {
 }
 
 /** A row element as the pointer handlers see it: identity plus its box. */
-const rowElement = (id, top = 0, height = 32) => ({
-  getAttribute: name => (name === 'data-dsm-session' || name === 'data-dsm-group' ? id : null),
+const rowElement = (id, top = 0, height = 32, scope = null) => ({
+  getAttribute: name => (name === 'data-dsm-session' || name === 'data-dsm-group'
+    ? id
+    : name === 'data-dsm-scope' ? scope : null),
   getBoundingClientRect: () => ({ top, bottom: top + height, height, left: 0, right: 240 }),
 })
 /** A pointer press/move/release on one row. The region reads the row under it. */
@@ -1045,14 +1084,14 @@ test('the row menu exposes pin, rename, fork, archive, move and copy rows', () =
     .filter(item => item.id && item.type !== 'separator')
     .map(item => item.id))
   assert.deepEqual(actions(rowMenu),
-    ['pin', 'rename', 'fork', 'archive', 'moveUp', 'moveDown', 'copyId', 'copyCwd',
+    ['pin', 'rename', 'fork', 'archive', 'folder', 'moveUp', 'moveDown', 'copyId', 'copyCwd',
       'priority-label', 'priority:p1', 'priority:p2', 'priority:p3', 'priority:p4', 'priority:none'])
   assert.deepEqual(plain(rowMenu.props.items.filter(item => item.type === 'separator').map(item => item.id)),
-    ['sep-move', 'sep-copy', 'sep-priority'])
+    ['sep-folder', 'sep-move', 'sep-copy', 'sep-priority'])
   // Copying the working directory is offered only when the host summary has one.
   const noCwd = menuOfRow(tree, 'w1-b')
   assert.deepEqual(actions(noCwd),
-    ['pin', 'rename', 'fork', 'archive', 'moveUp', 'moveDown', 'copyId',
+    ['pin', 'rename', 'fork', 'archive', 'folder', 'moveUp', 'moveDown', 'copyId',
       'priority-label', 'priority:p1', 'priority:p2', 'priority:p3', 'priority:p4', 'priority:none'])
 })
 
@@ -1545,4 +1584,158 @@ test('a host without the job service fails open instead of blocking the region',
   const region = renderRegion(applied, { useJobs: () => undefined })
   assert.ok(rowsOf(region.tree).length > 0, 'the list still renders')
   assert.equal(applied.calls.some(call => call[0] === 'watchRows'), false)
+})
+
+test('folders render a tree of sections without becoming workspace drag groups', () => {
+  const applied = applyPlugin()
+  applied.injected.folderStore.set(folderState())
+  const region = renderRegion(applied)
+  // The chip strip is gone: folder names live once, as tree section headers.
+  assert.equal(nodesWithClass(region.tree, 'dsm-folder-strip').length, 0)
+  assert.equal(nodesWithClass(region.tree, 'dsm-folder-chip').length, 0)
+
+  const sections = []
+  walk(region.tree, node => { if (node.props?.['data-dsm-folder'] !== undefined) sections.push(node) })
+  assert.deepEqual(plain(sections.map(section => section.props['data-dsm-folder'])),
+    ['w1:f:f-1', 'w1:f:f-2', 'w1:u'])
+  // The folder wrapper must not become a workspace drag target.
+  assert.equal(sections[0].props['data-dsm-group'], undefined)
+  assert.equal(nodesWithClass(region.tree, 'dsm-folder-header').length, 3)
+
+  assert.deepEqual(plain(rowsOf(region.tree).map(row => row.props['data-dsm-session'])),
+    ['pinned', 'w1-a', 'w1-b', 'w1-c', 'w2-a'])
+})
+
+test('collapsing a folder section hides its rows without touching the host', () => {
+  const applied = applyPlugin()
+  applied.injected.folderStore.set(folderState())
+  const region = renderRegion(applied)
+  const headers = nodesWithClass(region.tree, 'dsm-folder-header')
+  headers[0].props.onClick()
+  const tree = region.render().tree
+  assert.deepEqual(plain(rowsOf(tree).map(row => row.props['data-dsm-session'])),
+    ['pinned', 'w1-b', 'w1-c', 'w2-a'])
+  assert.equal(moves(applied.calls).length, 0)
+  assert.equal(applied.calls.some(call => call[0] === 'openSession'), false)
+})
+
+test('the row folder submenu marks the current folder and assigns without a host write', () => {
+  const applied = applyPlugin()
+  applied.injected.folderStore.set(folderState())
+  const region = renderRegion(applied)
+  const menu = menuOfRow(region.tree, 'w1-a')
+  const folder = menu.props.items.find(item => item.id === 'folder')
+  assert.ok(folder, 'the row menu offers the folder submenu')
+  const entries = folder.submenu.filter(entry => entry.type !== 'separator')
+  assert.deepEqual(plain(entries.map(entry => entry.id)),
+    ['folder:none', 'folder:f-1', 'folder:f-2', 'folder:new'])
+  const current = entries.find(entry => entry.id === 'folder:f-1')
+  assert.ok(current?.icon, 'the current folder carries a check icon')
+  assert.equal(current.icon.props.size, 14)
+
+  menu.props.onSelect('folder:f-2')
+  const snapshot = plain(applied.injected.folderStore.getSnapshot())
+  assert.equal(snapshot.workspaces.w1.assign['w1-a'], 'f-2')
+  assert.equal(moves(applied.calls).length, 0)
+})
+
+test('a read-only folder state hides the switcher and refuses writes', () => {
+  const applied = applyPlugin()
+  applied.injected.folderStore.set({ v: 2, workspaces: { w1: { folders: [], assign: {} } } })
+  const region = renderRegion(applied)
+  assert.equal(nodesWithClass(region.tree, 'dsm-folder-strip').length, 0)
+  const menu = menuOfRow(region.tree, 'w1-a')
+  const folder = menu.props.items.find(item => item.id === 'folder')
+  assert.deepEqual(plain(folder.submenu.map(entry => entry.id)), ['folder:readonly'])
+  assert.equal(folder.submenu[0].disabled, true)
+
+  const before = applied.injected.folderStore.getSnapshot()
+  assert.equal(applied.injected.folderActions.assign('w1', 'w1-a', 'f-1'), undefined)
+  assert.equal(applied.injected.folderStore.getSnapshot(), before)
+})
+
+test('a drag across folders is refused instead of writing an invalid anchor', () => {
+  const applied = applyPlugin()
+  applied.injected.folderStore.set(folderState())
+  const region = renderRegion(applied)
+  const source = rowsOf(region.tree).find(row => row.props['data-dsm-session'] === 'w1-a')
+  source.props.onPointerDown(pointerEvent())
+  source.props.onPointerMove(pointerEvent({ clientY: 4, target: rowElement('w1-b', 0, 32, 'w1:f-2') }))
+  source.props.onPointerUp(pointerEvent())
+  assert.equal(moves(applied.calls).length, 0)
+  const target = rowsOf(region.render().tree).find(row => row.props['data-dsm-session'] === 'w1-b')
+  assert.equal(target?.props['data-drop'], undefined)
+})
+
+test('the create dialog adds the folder and files the invoking session', () => {
+  const applied = applyPlugin()
+  const region = renderRegion(applied)
+  assert.equal(nodesWithClass(region.tree, 'dsm-folder-strip').length, 0)
+  const menu = menuOfRow(region.tree, 'w1-a')
+  const folder = menu.props.items.find(item => item.id === 'folder')
+  assert.deepEqual(plain(folder.submenu.map(entry => entry.id)), ['folder:new'])
+  menu.props.onSelect('folder:new')
+
+  let tree = region.render().tree
+  const input = nodesWithClass(tree, 'dsm-rename-input')[0]
+  assert.ok(input, 'the create dialog offers a name field')
+  input.props.onChange({ target: { value: 'New folder' } })
+  tree = region.render().tree
+  let form = null
+  walk(tree, node => { if (node.type === 'form') form = node })
+  assert.ok(form, 'the dialog is a form')
+  form.props.onSubmit({ preventDefault() {} })
+
+  const snapshot = plain(applied.injected.folderStore.getSnapshot())
+  const folders = snapshot.workspaces.w1.folders
+  assert.equal(folders.length, 1)
+  assert.equal(folders[0].name, 'New folder')
+  assert.equal(snapshot.workspaces.w1.assign['w1-a'], folders[0].id)
+  assert.equal(moves(applied.calls).length, 0)
+})
+
+test('the workspace header creates the first folder without a session', () => {
+  const applied = applyPlugin()
+  applied.injected.folderStore.set(folderState())
+  const region = renderRegion(applied)
+  // Both workspaces expose the header create seat; w1 already has folders, w2 does not.
+  const buttons = nodesWithClassToken(region.tree, 'dsm-workspace-folder')
+  assert.equal(buttons.length, 2)
+  assert.ok(buttons[1].props['aria-label'])
+  buttons[1].props.onClick({ stopPropagation() {} })
+
+  let tree = region.render().tree
+  const input = nodesWithClass(tree, 'dsm-rename-input')[0]
+  assert.ok(input, 'the workspace create dialog offers a name field')
+  input.props.onChange({ target: { value: 'Workspace only' } })
+  tree = region.render().tree
+  let form = null
+  walk(tree, node => { if (node.type === 'form') form = node })
+  assert.ok(form, 'the dialog is a form')
+  form.props.onSubmit({ preventDefault() {} })
+
+  const snapshot = plain(applied.injected.folderStore.getSnapshot())
+  assert.equal(snapshot.workspaces.w2.folders.length, 1)
+  assert.equal(snapshot.workspaces.w2.folders[0].name, 'Workspace only')
+  assert.equal(Object.keys(snapshot.workspaces.w2.assign ?? {}).length, 0)
+  // The tree keeps the header seat after creation; the new section appears beside it.
+  assert.equal(nodesWithClassToken(region.render().tree, 'dsm-workspace-folder').length, 2)
+  assert.ok(nodesWithClass(region.render().tree, 'dsm-folder-header').length >= 4)
+})
+
+test('the storage listener adopts another window and is removed on cleanup', () => {
+  const applied = applyPlugin()
+  const listeners = applied.windowListeners.get('storage')
+  assert.ok(listeners && listeners.size > 0, 'apply registers the storage listener')
+  const next = {
+    v: 1,
+    workspaces: { w1: { folders: [{ id: 'f-9', name: 'Remote' }], assign: { 'w1-a': 'f-9' } } },
+  }
+  for (const listener of listeners) {
+    listener({ key: 'dsh-plugin:dsh-session-manager:folders', newValue: JSON.stringify(next) })
+  }
+  assert.deepEqual(plain(applied.injected.folderStore.getSnapshot()), next)
+
+  for (const effect of applied.effects) if (typeof effect.dispose === 'function') effect.dispose()
+  assert.equal((applied.windowListeners.get('storage')?.size ?? 0), 0)
 })
