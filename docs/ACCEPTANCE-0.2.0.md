@@ -28,8 +28,8 @@ node scripts/check-plugin-contract.mjs .
 
 - `core`：folder schema 分类/净化/原型污染、名称校验、增删改移、pruneAssign、buildFolderView(s)、
   workspaceOfSession、目录内 moveAnchor；既有 49 条纯函数用例保持绿。
-- `contract`：空目录回归、切换条与 FolderSection、chip 切换不写宿主、行菜单子目录与当前项、
-  只读 v2、跨目录拖动拒绝、创建弹窗归置、既有拖动/分页/搜索/优先级/job watch 回归。
+- `contract`：空目录回归、目录树与 FolderSection、折叠目录不写宿主、行菜单子目录与当前项、
+  只读 v2、跨目录拖动拒绝、创建弹窗归置、表头创建目录、既有拖动/分页/搜索/优先级/job watch 回归。
 - `static`：命名空间键、无 Web Storage 字样、FolderSection 不带 `data-dsm-group`、表头不 sticky、
   依赖表、声明面（5 个服务 / 0 个包边）。
 - `align`：slot、service、primitives（含 `Menu.submenu` / 两个图标）、store persist、
@@ -43,7 +43,7 @@ node scripts/check-plugin-contract.mjs .
 | `dsh-app://app` 下 localStorage 跨重启 | **未实测** | 需人工重启桌面版；同 origin 的优先级键已有先例 |
 | 多窗口 `storage` 收敛 | **未实测** | contract 只覆盖监听注册/派发；真实双窗口未开 |
 | 桌面 vs 浏览器 Web GUI 各自独立 | **未实测** | 两个 origin 的预期行为，需人工确认 |
-| 340px 侧栏切换条换行 / 深浅主题 | **未验收** | 需台架/人眼 |
+| 340px 侧栏目录树标题 / 深浅主题 | **未验收** | 需台架/人眼 |
 | 拖动会话到目录标题归置（原 P1） | **已移出 0.2.0** | 行菜单归置已覆盖能力；拖动只是快捷方式 |
 | 目录拖拽排序（原 P2） | **已移出 0.2.0** | 目录菜单上移/下移已覆盖能力 |
 
@@ -56,13 +56,13 @@ node scripts/check-plugin-contract.mjs .
 5. 目录内拖动 / `Alt+↑↓`；刷新后宿主顺序保持。
 6. 置顶行归置 → 取消置顶 → 回到目录。
 7. 归档筛选三态、优先级视图、搜索、分页、折叠均无回退。
-8. 深/浅主题、340px 侧栏；chip 计数与 `•` 标记可读。
+8. 深/浅主题、340px 侧栏；目录小节计数与 attention 点可读。
 9. 停用插件 → 原生列表完整；重新启用 → 目录恢复。
 10. 双窗口：A 建目录，B 不刷新能看到；B 改名，A 收到。
 
 ## 5. 已知降级
 
-- 仅后台 job 在跑、且所在目录被折叠/过滤时，chip 的 `•` 不会亮（job roster 只为被 watch 的行
+- 仅后台 job 在跑、且所在目录被折叠时，目录标题的 attention 点不会亮（job roster 只为被 watch 的行
   建流）；P0 接受，见 DESIGN §4.6。
 - 子目录数据按 origin 隔离，不跨设备；桌面与浏览器各一份。
 - 未知 schema 版本只读，入口隐藏，不覆盖新数据。
@@ -96,3 +96,18 @@ node scripts/check-plugin-contract.mjs .
 - 注意：该切换只改 `node_modules` 软链，应用下次触发 pnpm 安装/重装时可能按 profile 的 `package.json` 还原为原 checkout。
   若真机验收时看不到子目录，先确认软链目标，或改用 managed remove/install 或合并分支。
 - 备份在本地临时目录（package.json / pnpm-lock / 原软链目标），不随仓库。
+
+
+## 7. 原 checkout 残留审计（2026-11-09）
+
+原 checkout（`main`）仍有 3 类未提交内容，均**未**带入本 worktree，也没有被修改：
+
+| 内容 | 实际改动 | 判断 |
+|---|---|---|
+| `src/client/core.js` + `client/client.js`：blank 可见性 | `row.blank === true && id !== currentId && !row.title && !row.displayTitle` | **应丢弃**：宿主 `displayTitle` 由 `displayTitleOf(...)` 兜底到 id，永远非空，所以条件恒为 false，所有 blank 行都会显示。原意若只是去掉 blank 过滤，应单独提 issue 并补测试。 |
+| `core.js` + bundle：`SESSION_PAGE_BASE` | 5 → 50 | **待定**：若确实想每个分组一次显示 50 行，应同时改源码与测试；不要只留 bundle。当前 worktree 仍是 5。 |
+| `client/client.js`：macOS 表头 CSS | 玻璃 `color-mix` + `backdrop-filter` → 不透明 `--dsw-alias-bg-layer-2,#1e1e1e` | **应丢弃或回源**：只改了 bundle，源码 `body.js` 仍是玻璃；下一次构建会丢。 |
+| 未跟踪 `client/client.js.bak-20261029021744` | 本地备份 | 删除；不应入库 |
+| 未跟踪 `docs/DESIGN-0.2.0.md` | 11-08 的旧设计稿 | 删除；正式版已在本仓 `docs/DESIGN-0.2.0.md` |
+
+结论：**不建议原样提交**。若要保留 50 行分页，应作为独立改动重做并补测试；blank 与 CSS 两项应丢弃。
