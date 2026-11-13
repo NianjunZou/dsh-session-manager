@@ -822,6 +822,38 @@ export function readFolderState(raw) {
 }
 
 /**
+ * Assign many sessions to one folder in a single write.
+ *
+ * Bulk filing is one gesture, so it is one store write: a per-row loop would
+ * repaint the tree once per row and could leave a half-filed view on failure.
+ * @param {object} state - v1 state.
+ * @param {string} workspaceId - owning workspace.
+ * @param {readonly string[]} sessionIds - sessions to file.
+ * @param {string|null|undefined} folderId - target folder, or null/undefined for unfiled.
+ * @returns {object} the new state, or the input reference when nothing changes.
+ */
+export function assignSessions(state, workspaceId, sessionIds, folderId) {
+  if (!isFolderState(state) || !Array.isArray(sessionIds)) return state
+  const entry = foldersOf(state, workspaceId)
+  const target = folderId === null || folderId === undefined ? null : String(folderId)
+  if (target !== null && !entry.folders.some(folder => folder.id === target)) return state
+  const ids = []
+  for (const id of sessionIds) {
+    if (!isSafeKey(id)) continue
+    if ((entry.assign[id] ?? null) === target) continue
+    if (!ids.includes(id)) ids.push(id)
+  }
+  if (ids.length === 0) return state
+  return withWorkspace(state, workspaceId, (draft) => {
+    for (const id of ids) {
+      if (target === null) delete draft.assign[id]
+      else draft.assign[id] = target
+    }
+    return true
+  })
+}
+
+/**
  * Read one workspace's folders and assignments as immutable copies.
  * @param {object} state - sanitized v1 state.
  * @param {string} workspaceId - host workspace id.
@@ -978,6 +1010,36 @@ export function moveFolder(state, workspaceId, folderId, direction) {
     const moved = draft.folders[index]
     draft.folders[index] = draft.folders[next]
     draft.folders[next] = moved
+    return true
+  })
+}
+
+/**
+ * Move one folder to a slot before or after another folder.
+ *
+ * Drag ordering is expressed as "this folder now sits before/after that one",
+ * so the caller never has to translate a pixel position into an index.
+ * @param {object} state - v1 state.
+ * @param {string} workspaceId - target workspace.
+ * @param {string} movingId - folder being moved.
+ * @param {string} targetId - folder the move is anchored to.
+ * @param {'before'|'after'} [position] - side of the anchor to land on.
+ * @returns {object} the new state, or the input reference when nothing changes.
+ */
+export function reorderFolder(state, workspaceId, movingId, targetId, position = 'before') {
+  if (!isFolderState(state) || movingId === targetId) return state
+  const entry = foldersOf(state, workspaceId)
+  const from = entry.folders.findIndex(folder => folder.id === movingId)
+  const anchor = entry.folders.findIndex(folder => folder.id === targetId)
+  if (from === -1 || anchor === -1) return state
+  const order = entry.folders.map(folder => folder.id).filter(id => id !== movingId)
+  const at = order.indexOf(targetId)
+  const insert = position === 'after' ? at + 1 : at
+  if (insert === from) return state
+  order.splice(insert, 0, movingId)
+  return withWorkspace(state, workspaceId, (draft) => {
+    const byId = new Map(draft.folders.map(folder => [folder.id, folder]))
+    draft.folders = order.map(id => byId.get(id))
     return true
   })
 }
@@ -1165,6 +1227,85 @@ export function sanitizeQuery(value, maxUnits = SEARCH_QUERY_MAX_UNITS) {
 }
 
 /**
+ * Split a query into the terms every local match must satisfy.
+ *
+ * NFKC folds full-width forms, so a query typed on a Chinese IME (`ＡＰＩ`)
+ * still finds an ASCII title; lower-casing keeps the matcher case-insensitive.
+ * Duplicates are dropped because a repeated term cannot narrow a match.
+ * @param {string} query - raw search input.
+ * @returns {string[]} normalized terms (empty when the query is blank).
+ */
+export function searchTerms(query) {
+  const terms = []
+  for (const part of String(query ?? '').normalize('NFKC').toLowerCase().split(/\s+/u)) {
+    if (part !== '' && !terms.includes(part)) terms.push(part)
+  }
+  return terms
+}
+
+/**
+ * Locate every case-insensitive occurrence of the terms in a label.
+ * @param {string} text - the label as rendered.
+ * @param {readonly string[]} terms - lowercase terms from {@link searchTerms}.
+ * @returns {Array<[number, number]>} merged `[start, end)` ranges in text order.
+ */
+export function matchRanges(text, terms) {
+  const hay = String(text ?? '').toLowerCase()
+  const ranges = []
+  for (const term of terms) {
+    if (term === '') continue
+    let from = 0
+    while (from <= hay.length - term.length) {
+      const at = hay.indexOf(term, from)
+      if (at < 0) break
+      ranges.push([at, at + term.length])
+      from = at + term.length
+    }
+  }
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  const merged = []
+  for (const range of ranges) {
+    const last = merged[merged.length - 1]
+    if (last !== undefined && range[0] <= last[1]) last[1] = Math.max(last[1], range[1])
+    else merged.push([range[0], range[1]])
+  }
+  return merged
+}
+
+/**
+ * Whether a host rejection means content search is off for this deployment.
+ *
+ * The base bundle mounts the session-query index with `openAt: 'never'`, where
+ * every content call rejects with `SESSION_QUERY_SEARCH_DISABLED`. That is a
+ * deployment setting rather than a failed search, so the region degrades to
+ * local matching instead of painting an error on every keystroke.
+ * @param {unknown} error - rejection from `searchSessions`.
+ * @returns {boolean} true when only local matching is available.
+ */
+export function contentSearchDisabled(error) {
+  if (error?.code === 'SESSION_QUERY_SEARCH_DISABLED') return true
+  const message = String(error?.message ?? error ?? '')
+  return /SESSION_QUERY_SEARCH_DISABLED|session search is disabled/i.test(message)
+}
+
+/**
+ * Label each session by the workspace that lists it.
+ *
+ * The first workspace that claims a session wins, which matches how the tree
+ * groups members: a session is listed under one account.
+ * @param {readonly object[]} workspaces - `workspaces.list` items.
+ * @returns {Map<string, string>} session id to workspace label.
+ */
+export function workspaceLabels(workspaces) {
+  const labels = new Map()
+  for (const workspace of workspaces || []) {
+    const label = workspace.title || workspaceLabelOf(workspace.path)
+    for (const id of workspace.sessionIds || []) if (!labels.has(id)) labels.set(id, label)
+  }
+  return labels
+}
+
+/**
  * Page a block must open at so nothing that needs attention stays hidden.
  * @param {readonly string[]} ids - the block's members, in render order.
  * @param {Set<string>} attention - sessions at work, waiting or unread.
@@ -1180,6 +1321,87 @@ export function requiredPageLimit(ids, attention, currentId) {
     if (attention.has(id) || id === currentId) required = index
   }
   return required
+}
+
+/**
+ * Classify a failed session rename by the host's reason.
+ *
+ * A rename resumes the session first, so a session recorded with an agent
+ * preset this deployment no longer mounts cannot be renamed at all. Naming that
+ * case keeps the dialog actionable instead of echoing a transport string.
+ * @param {unknown} message - the rejection message.
+ * @returns {{kind: 'preset', preset: string}|{kind: 'resume'}|{kind: 'other'}} the reason.
+ */
+export function explainRenameFailure(message) {
+  const text = String(message ?? '')
+  const preset = /Unknown agent preset:\s*([^\s"']+)/i.exec(text)
+  if (preset !== null) return { kind: 'preset', preset: preset[1] }
+  if (/resume failed/i.test(text)) return { kind: 'resume' }
+  return { kind: 'other' }
+}
+
+/**
+ * Read the stored takeover choice.
+ *
+ * Only an explicit `'off'` yields the region; a missing or malformed value
+ * means this window keeps the region, which is the shipped behavior.
+ * @param {unknown} raw - the stored value.
+ * @returns {'on'|'off'} the normalized mode.
+ */
+export function readTakeover(raw) {
+  return raw?.mode === 'off' ? 'off' : 'on'
+}
+
+/** Default auto-archive policy: off until the operator turns it on. */
+export const AUTO_ARCHIVE_INIT = Object.freeze({ days: null })
+/** The longest idle window a reasonable policy would ask for (one year). */
+export const AUTO_ARCHIVE_MAX_DAYS = 365
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Read the stored auto-archive policy.
+ *
+ * Only a positive whole number of days is a policy; anything else (a missing
+ * key, a stale shape, `0`, a negative, a float) means "off", so a bad value can
+ * never archive more than the operator asked for.
+ * @param {unknown} raw - the stored value.
+ * @returns {{days: number|null}} the normalized policy.
+ */
+export function readAutoArchive(raw) {
+  const days = raw?.days
+  if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > AUTO_ARCHIVE_MAX_DAYS) {
+    return AUTO_ARCHIVE_INIT
+  }
+  return { days }
+}
+
+/**
+ * Sessions an auto-archive sweep may archive right now.
+ *
+ * Archive is reversible, so the sweep is allowed to be eager about idle
+ * sessions — but it never touches a pinned, archived, current, running or
+ * subagent row, because those are either deliberate or not the operator's to
+ * file away.
+ * @param {object} input - `{ list, archivedSessionIds, pinnedSessionIds, currentId, busy, days, now }`.
+ * @returns {string[]} ids to archive, oldest activity first.
+ */
+export function autoArchiveCandidates(input) {
+  const { list, archivedSessionIds, pinnedSessionIds, currentId, busy, days, now } = input
+  if (typeof days !== 'number' || !Number.isInteger(days) || days < 1) return []
+  const byId = list?.byId || {}
+  const archived = new Set(archivedSessionIds || [])
+  const pinned = new Set(pinnedSessionIds || [])
+  const running = busy instanceof Set ? busy : new Set(busy || [])
+  const cutoff = now - days * DAY_MS
+  const candidates = []
+  for (const id of list?.ids || []) {
+    const row = byId[id]
+    if (!row || row.blank === true || row.origin === SUBAGENT_ORIGIN) continue
+    if (archived.has(id) || pinned.has(id) || running.has(id) || id === currentId) continue
+    if (!Number.isFinite(row.updatedAt) || row.updatedAt >= cutoff) continue
+    candidates.push(id)
+  }
+  return candidates.sort((a, b) => (byId[a].updatedAt ?? 0) - (byId[b].updatedAt ?? 0))
 }
 
 /**
@@ -1222,15 +1444,17 @@ export function workspaceLabelOf(cwd) {
  * Merge the host's content hits with local title/workspace matches into rows.
  *
  * Local matches come first (most recently active first, the same ordering the
- * list uses), then content hits the local pass did not already include. Blank
- * placeholders never match, because their canonical title is localized.
+ * list uses), then content hits the local pass did not already include. Every
+ * whitespace-separated term must appear in the title or the workspace label,
+ * so a two-word query narrows instead of widening. Blank placeholders never
+ * match, because their canonical title is localized.
  *
  * @param {object} input - `{ list, workspaces, query, items, hasMore, limit, archivedSessionIds, archivedFilter, currentId, labels }`.
  * @returns {{nodes: Array<object>, hasMore: boolean, total: number, truncated: boolean}}
  */
 export function buildSearchNodes(input) {
-  const query = String(input.query ?? '').trim().toLowerCase()
-  if (query === '') return { nodes: [], hasMore: false, total: 0, truncated: false }
+  const terms = searchTerms(input.query)
+  if (terms.length === 0) return { nodes: [], hasMore: false, total: 0, truncated: false }
   const list = input.list
   const byId = list?.byId || {}
   const archived = new Set(input.archivedSessionIds || [])
@@ -1257,7 +1481,9 @@ export function buildSearchNodes(input) {
   for (const id of list?.ids || []) {
     if (!visible(id)) continue
     const row = byId[id]
-    if (titleOf(row).toLowerCase().includes(query) || labelOf(row).toLowerCase().includes(query)) local.push(id)
+    const title = titleOf(row).toLowerCase()
+    const label = labelOf(row).toLowerCase()
+    if (terms.every(term => title.includes(term) || label.includes(term))) local.push(id)
   }
 
   const snippetById = new Map()
@@ -1275,12 +1501,17 @@ export function buildSearchNodes(input) {
   const limit = Number.isFinite(input.limit) ? input.limit : ids.length
   const shown = ids.slice(0, Math.max(0, limit))
   return {
-    nodes: shown.map(id => ({
-      id,
-      title: titleOf(byId[id]),
-      workspace: labelOf(byId[id]),
-      snippet: snippetById.get(id),
-    })),
+    nodes: shown.map((id) => {
+      const row = byId[id]
+      const title = titleOf(row)
+      return {
+        id,
+        title,
+        workspace: labelOf(row),
+        snippet: snippetById.get(id),
+        titleMatch: matchRanges(title, terms),
+      }
+    }),
     hasMore: input.hasMore === true || ids.length > shown.length,
     total: ids.length,
     truncated: ids.length > shown.length,

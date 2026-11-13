@@ -17,6 +17,11 @@ import {
   SESSION_PAGE_BASE,
   STATE_DOT,
   assignSession,
+  assignSessions,
+  autoArchiveCandidates,
+  readAutoArchive,
+  readTakeover,
+  explainRenameFailure,
   buildFolderView,
   buildFolderViews,
   buildSearchNodes,
@@ -29,10 +34,13 @@ import {
   pageRows,
   pruneAssign,
   readFolderState,
-  renameFolder,
+  reorderFolder,
   requiredPageLimit,
   sanitizeFolderState,
   sanitizeQuery,
+  searchTerms,
+  matchRanges,
+  contentSearchDisabled,
   workspaceLabelOf,
   workspaceOfSession,
   buildChildren,
@@ -738,6 +746,57 @@ test('sanitizeQuery strips NUL and never splits a surrogate pair at the cap', ()
   assert.equal(sanitizeQuery(`ab${emoji}cd`, 4), `ab${emoji}`)
 })
 
+test('explainRenameFailure names a preset the profile no longer mounts', () => {
+  const preset = explainRenameFailure('resume failed for session "session-7bc8": RemoteError: Unknown agent preset: xingce')
+  assert.deepEqual(preset, { kind: 'preset', preset: 'xingce' })
+  assert.deepEqual(explainRenameFailure('resume failed for session "s"'), { kind: 'resume' })
+  assert.deepEqual(explainRenameFailure('boom'), { kind: 'other' })
+  assert.deepEqual(explainRenameFailure(undefined), { kind: 'other' })
+})
+
+test('readTakeover yields only on an explicit off', () => {
+  assert.equal(readTakeover(undefined), 'on')
+  assert.equal(readTakeover({}), 'on')
+  assert.equal(readTakeover({ mode: 'on' }), 'on')
+  assert.equal(readTakeover({ mode: 'off' }), 'off')
+  assert.equal(readTakeover({ mode: 'OFF' }), 'on')
+})
+
+test('readAutoArchive accepts whole days only and otherwise stays off', () => {
+  assert.deepEqual(readAutoArchive(undefined), { days: null })
+  assert.deepEqual(readAutoArchive({ days: 7 }), { days: 7 })
+  for (const days of [0, -1, 1.5, '7', 366, NaN, null]) {
+    assert.deepEqual(readAutoArchive({ days }), { days: null })
+  }
+})
+
+test('autoArchiveCandidates skips pinned, archived, current, running and subagent rows', () => {
+  const now = 10 * 24 * 60 * 60 * 1000
+  const day = 24 * 60 * 60 * 1000
+  const snapshot = list([
+    { id: 'old', displayTitle: 'old', updatedAt: now - 10 * day },
+    { id: 'recent', displayTitle: 'recent', updatedAt: now - 1 * day },
+    { id: 'pinned', displayTitle: 'pinned', updatedAt: now - 10 * day },
+    { id: 'archived', displayTitle: 'archived', updatedAt: now - 10 * day },
+    { id: 'current', displayTitle: 'current', updatedAt: now - 10 * day },
+    { id: 'running', displayTitle: 'running', updatedAt: now - 10 * day },
+    { id: 'child', parentId: 'old', origin: 'subagent', displayTitle: 'child', updatedAt: now - 10 * day },
+    { id: 'blank', displayTitle: 'blank', blank: true, updatedAt: now - 10 * day },
+  ])
+  const ids = autoArchiveCandidates({
+    list: snapshot,
+    archivedSessionIds: ['archived'],
+    pinnedSessionIds: ['pinned'],
+    currentId: 'current',
+    busy: new Set(['running']),
+    days: 7,
+    now,
+  })
+  assert.deepEqual(ids, ['old'])
+  // A policy of "off" archives nothing at all.
+  assert.deepEqual(autoArchiveCandidates({ list: snapshot, days: null, now }), [])
+})
+
 test('requiredPageLimit raises the page to the last session that needs attention', () => {
   const ids = ['a', 'b', 'c', 'd', 'e', 'f']
   assert.equal(requiredPageLimit(ids, new Set(), undefined), 0)
@@ -799,6 +858,45 @@ test('buildSearchNodes merges local title matches with content hits', () => {
   assert.equal(result.nodes.some(node => node.id === 'child' || node.id === 'blank'), false)
 })
 
+test('searchTerms normalizes width and case, and drops repeated terms', () => {
+  assert.deepEqual(searchTerms('  API  api  会话 '), ['api', '会话'])
+  assert.deepEqual(searchTerms('ＡＰＩ'), ['api'])
+  assert.deepEqual(searchTerms('   '), [])
+})
+
+test('matchRanges merges overlapping occurrences in text order', () => {
+  assert.deepEqual(matchRanges('Alpha alpha', ['alpha']), [[0, 5], [6, 11]])
+  assert.deepEqual(matchRanges('abcabc', ['abc', 'bca']), [[0, 6]])
+  assert.deepEqual(matchRanges('none', ['x']), [])
+  assert.deepEqual(matchRanges('abc', []), [])
+})
+
+test('contentSearchDisabled recognizes only the disabled-index rejection', () => {
+  assert.equal(contentSearchDisabled({ code: 'SESSION_QUERY_SEARCH_DISABLED' }), true)
+  assert.equal(contentSearchDisabled(new Error('session search is disabled: this deployment is local only')), true)
+  assert.equal(contentSearchDisabled(new Error('session-search SQLite index failed to open')), false)
+  assert.equal(contentSearchDisabled(undefined), false)
+})
+
+test('buildSearchNodes requires every term and reports highlight ranges', () => {
+  const snapshot = list([
+    { id: 'both', displayTitle: 'Alpha beta', updatedAt: 2 },
+    { id: 'one', displayTitle: 'Alpha only', updatedAt: 1 },
+  ])
+  const result = buildSearchNodes({
+    list: snapshot,
+    workspaces: [],
+    query: 'alpha BETA',
+    items: [],
+    limit: 10,
+    archivedSessionIds: [],
+    archivedFilter: 'default',
+  })
+  // AND, not OR: "beta" narrows the single-title match.
+  assert.deepEqual(result.nodes.map(node => node.id), ['both'])
+  assert.deepEqual(result.nodes[0].titleMatch, [[0, 5], [6, 10]])
+})
+
 test('buildSearchNodes honours the archived filter, the limit and hasMore', () => {
   const snapshot = list([
     { id: 'a', displayTitle: 'hit a', updatedAt: 3 },
@@ -816,6 +914,73 @@ test('buildSearchNodes honours the archived filter, the limit and hasMore', () =
   assert.equal(limited.total, 3)
   // An empty query is not a search.
   assert.deepEqual(buildSearchNodes({ ...base, query: '   ' }).nodes, [])
+})
+
+test('the archived-only view keeps workspace grouping', () => {
+  const snapshot = list([
+    { id: 'a1', displayTitle: 'A one', updatedAt: 3 },
+    { id: 'b1', displayTitle: 'B one', updatedAt: 2 },
+    { id: 'a2', displayTitle: 'A two', updatedAt: 1 },
+  ])
+  const tree = computeGroups({
+    list: snapshot,
+    workspaces: [
+      { workspaceId: 'wa', title: 'alpha', sessionIds: ['a1', 'a2'] },
+      { workspaceId: 'wb', title: 'beta', sessionIds: ['b1'] },
+    ],
+    orderBy: 'updated',
+    archivedFilter: 'only',
+    pinnedSessionIds: [],
+    archivedSessionIds: ['a1', 'a2', 'b1'],
+  })
+  // Archiving hides rows from the default view, not from their workspace.
+  assert.deepEqual(tree.groups.map(group => [group.workspaceId, group.sessions]), [
+    ['wa', ['a1', 'a2']],
+    ['wb', ['b1']],
+  ])
+  const hidden = computeGroups({
+    list: snapshot,
+    workspaces: [
+      { workspaceId: 'wa', title: 'alpha', sessionIds: ['a1', 'a2'] },
+      { workspaceId: 'wb', title: 'beta', sessionIds: ['b1'] },
+    ],
+    orderBy: 'updated',
+    archivedFilter: 'default',
+    pinnedSessionIds: [],
+    archivedSessionIds: ['a1', 'a2', 'b1'],
+  })
+  assert.deepEqual(hidden.groups, [])
+})
+
+test('assignSessions files a whole selection in one write', () => {
+  let state = { v: 1, workspaces: {} }
+  state = createFolder(state, 'w', { id: 'f-a', name: 'A' })
+  state = createFolder(state, 'w', { id: 'f-b', name: 'B' })
+  state = assignSession(state, 'w', 's1', 'f-a')
+  const next = assignSessions(state, 'w', ['s2', 's3', 's2', 's1'], 'f-b')
+  assert.deepEqual(next.workspaces.w.assign, { s1: 'f-b', s2: 'f-b', s3: 'f-b' })
+  // Nothing to change is the same reference; an unknown folder writes nothing.
+  assert.equal(assignSessions(next, 'w', ['s2'], 'f-b'), next)
+  assert.equal(assignSessions(next, 'w', ['s2'], 'f-zz'), next)
+  // Filing back to unfiled drops the assignment rather than storing a marker.
+  const unfiled = assignSessions(next, 'w', ['s1', 's2'], null)
+  assert.deepEqual(unfiled.workspaces.w.assign, { s3: 'f-b' })
+})
+
+test('reorderFolder lands a folder before or after its anchor', () => {
+  let state = { v: 1, workspaces: {} }
+  state = createFolder(state, 'w', { id: 'f-a', name: 'A' })
+  state = createFolder(state, 'w', { id: 'f-b', name: 'B' })
+  state = createFolder(state, 'w', { id: 'f-c', name: 'C' })
+  const ids = next => next.workspaces.w.folders.map(folder => folder.id)
+  // Moving a folder that already sits before its anchor is a no-op reference.
+  assert.equal(reorderFolder(state, 'w', 'f-a', 'f-b', 'before'), state)
+  assert.deepEqual(ids(reorderFolder(state, 'w', 'f-a', 'f-b', 'after')), ['f-b', 'f-a', 'f-c'])
+  assert.deepEqual(ids(reorderFolder(state, 'w', 'f-c', 'f-a', 'before')), ['f-c', 'f-a', 'f-b'])
+  assert.deepEqual(ids(reorderFolder(state, 'w', 'f-c', 'f-b', 'after')), ['f-a', 'f-b', 'f-c'])
+  // Unknown folders and self-anchors never write.
+  assert.equal(reorderFolder(state, 'w', 'f-a', 'f-a'), state)
+  assert.equal(reorderFolder(state, 'w', 'f-zz', 'f-b'), state)
 })
 
 test('computeGroups keeps every member so the region can page them itself', () => {
