@@ -139,7 +139,7 @@ peer 范围 `>=0.2.0-alpha.0 <0.3.0-0` 按 DSH 运行时的 `includePrerelease` 
 
 从 npm 安装：`dsh plugin --profile <profile> add @pianner/dsh-session-manager`，并在 `dsh.profile.bundles` 中加入 `@pianner/dsh-session-manager`，重启 DSH。也可 clone 本仓库（或使用 `.tgz`）做本地开发安装。完整步骤见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
-本仓库当前版本是 **0.3.0**（开发中，尚未发布到 npm）。发布清单见
+本仓库当前版本是 **0.3.0**（已发布到 npm，`latest` 指向 0.3.0）。发布清单见
 [`docs/DEPLOY.md`](docs/DEPLOY.md)，验收记录见 [`docs/ACCEPTANCE-0.2.0.md`](docs/ACCEPTANCE-0.2.0.md)。
 
 ## 开发与验证

@@ -73,7 +73,7 @@ npm run build          # 生成 client/client.js
 验收记录见 `docs/ACCEPTANCE-0.1.7.md`；试用期内不要同时安装 npm 上的旧版本，避免两个副本各自的
 bundle 条目互相覆盖。
 
-## 发布到 npm（**本次未执行**）
+## 发布到 npm
 
 前置条件（缺一不可）：
 
