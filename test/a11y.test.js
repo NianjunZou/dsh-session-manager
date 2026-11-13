@@ -55,6 +55,8 @@ test('the region is fully operable from the keyboard', () => {
 })
 
 test('a truncated title still exposes its full text', () => {
-  assert.match(code, /className: 'dsm-title', title \}/)
+  // The tooltip carries the full title plus where the session lives, so a
+  // truncated row is still identifiable on hover.
+  assert.match(code, /className: 'dsm-title', title: hoverTitle\(title, workspaceLabel, summary\)/)
   assert.match(code, /\.dsm-title\{[^}]*text-overflow:ellipsis/)
 })

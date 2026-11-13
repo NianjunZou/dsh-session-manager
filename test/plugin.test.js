@@ -18,7 +18,8 @@ const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf
 
 test('identity is one thing across package, client module id and bundle name', () => {
   assert.equal(pkg.name, '@pianner/dsh-session-manager')
-  assert.equal(pkg.version, '0.2.0')
+  assert.equal(pkg.version, pkg.version.trim())
+  assert.equal(pkg.version, JSON.parse(readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8')).packages[''].version)
   assert.equal(pkg.exports['./client'], './client/client.js')
   assert.equal(pkg.dsh.client.platform, 'web')
   assert.ok(code.includes(`id: "@pianner/dsh-session-manager"`))
@@ -354,13 +355,13 @@ test('folder state uses its own versioned key and lives on the injection face', 
 test('folder sections are not workspace drag groups and their header is not sticky', () => {
   // A nested Section would carry `data-dsm-group` (the workspace drag target)
   // and a sticky header; the folder block must carry neither.
-  assert.match(code, /className: 'dsm-folder-group', 'data-dsm-folder': section\.key/)
+  assert.match(code, /className: 'dsm-folder-group',\s*'data-dsm-folder': section\.key,/)
   assert.equal(/\.dsm-folder-row\{[^}]*position:sticky/.test(code), false)
   assert.match(code, /\.dsm-folder-mark\{[^}]*border-radius:50%/)
 })
 
 test('the folder renderer is wired into the row dependency table and the declaration stays minimal', () => {
-  assert.match(code, /folderEntries, folderReadonly, move, now,/)
+  assert.match(code, /folderOptionsCache, handleAssignFolder,/)
   assert.match(code, /const inject = \['slots', 'sessions', 'workspaces', 'uiWorkspace', 'locale'\]/)
   assert.equal(pkg.dsh.client.inject.length, 0)
 })
@@ -369,7 +370,9 @@ test('the first folder is creatable from the workspace header, not only a sessio
   assert.match(code, /className: 'dsm-workspace-action dsm-workspace-folder'/)
   assert.match(code, /onNewFolder/)
   assert.match(code, /\.dsm-workspace-folder\{position:relative;opacity:1\}/)
-  assert.match(code, /\.dsm-workspace-folder::after\{content:"\+"/)
+  // The plus is a real icon, not a CSS text glyph.
+  assert.match(code, /dsm-folder-plus/)
+  assert.match(code, /className: 'dsm-folder-plus'/)
   // The tree has no chip strip, so the header seat stays after the first folder.
   assert.match(code, /onNewFolder: group\.workspaceId === undefined \|\| folderReadonly/)
   assert.match(code, /openCreateFolder\(group\.workspaceId\)/)
@@ -383,7 +386,105 @@ test('folder tree headers stay light and there is no duplicate chip row', () => 
   assert.equal(code.includes('dsm-folder-new'), false)
   assert.equal(code.includes('IconFolderOpenOutlineRegular'), false)
   assert.match(code, /\.dsm-folder-header\{[^}]*height:28px/)
-  assert.match(code, /\.dsm-folder-header\{[^}]*padding-inline-start:38px/)
+  assert.match(code, /\.dsm-folder-header\{[^}]*padding-inline-start:44px/)
+  // The workspace is the primary heading and the folder is secondary: a
+  // child level never outweighs its parent, and its rows sit one step deeper.
+  assert.match(code, /\.dsm-section-label\{[^}]*font-weight:600/)
+  assert.match(code, /\.dsm-folder-header\{[^}]*font-weight:400/)
+  assert.match(code, /\.dsm-folder-group \.dsm-row\{padding-inline-start:48px\}/)
   assert.match(code, /\.dsm-folder-header\{[^}]*font-size:14px/)
   assert.match(code, /\.dsm-folder-row \.dsm-folder-count\{margin-inline-start:6px\}/)
+})
+
+test('dropping a row on a folder header files it there', () => {
+  // The folder group declares the drop seat and the row resolves it through the
+  // folder store; a reorder never runs when the pointer marked no row.
+  assert.match(code, /'data-dsm-folder-id': section\.id/)
+  assert.match(code, /onFolderOver: folderOptions === undefined \? undefined : handleFolderOver/)
+  assert.match(code, /const target = folderId === FOLDER_UNFILED \? null : folderId/)
+  assert.match(code, /current\.folderActions\.assign\(workspaceId, sessionId, target, options\)/)
+  assert.match(code, /if \(active && \(bulkMulti \|\| !hasRowTarget\) && folderId !== null && onAssignFolder !== undefined\)/)
+  // The drop paints the folder it would file into.
+  assert.match(code, /data-dsm-drop': folderHover \? 'true' : undefined/)
+})
+
+test('folders drag-reorder against each other within one workspace', () => {
+  assert.match(code, /folderActions\.reorder\(workspaceId, move\.id, hint\.id/)
+  assert.match(code, /'data-dsm-folder-ws': workspaceId/)
+  assert.match(code, /data-dsm-folder-side='before'/)
+  assert.match(code, /function reorderFolder\(state, workspaceId, movingId, targetId/)
+})
+
+test('bulk selection is scoped to one workspace and files in one write', () => {
+  // The scope guard names the workspace, so rows of another workspace never
+  // render a checkbox and a transfer can only name one folder.
+  assert.match(code, /const bulkActive = bulk !== null && typeof accountId === 'string' && bulk\.workspaceId === accountId/)
+  assert.match(code, /selectable: bulkActive \? true : selectable/)
+  assert.match(code, /folderActions\.assignMany\(workspaceId, ids, folderId === FOLDER_UNFILED \? null : folderId/)
+  assert.match(code, /'bulk\.moveTo'/)
+  assert.match(code, /'bulk\.scope'/)
+  // The bar is a tree-view mode: search, attention and the priority view own
+  // their own selections and must not stack a second bar.
+  assert.match(code, /bulk !== null && !searching && !priorityView \? h\('div', \{ className: 'dsm-bulk' \}/)
+})
+
+test('the select mode can be switched off from the same seat', () => {
+  assert.match(code, /bulk !== null && bulk\.workspaceId === group\.workspaceId \? leaveBulk\(\) : startBulk\(group\.workspaceId\)/)
+  assert.match(code, /'aria-pressed': String\(selectActive\)/)
+  assert.match(code, /selectActive \? 'true' : undefined/)
+  // The seat stays visible while the mode is on: a hover-only exit is a trap.
+  assert.match(code, /\.dsm-workspace-action\[data-active='true'\]\{opacity:1/)
+})
+
+test('a rejected rename shows the host reason instead of an inert dialog', () => {
+  // The dialog used to swallow the rejection: the button re-enabled and nothing
+  // said why. The reason now renders on the form.
+  assert.match(code, /catch \(reason\) \{[\s\S]{0,240}?setError\(String\(reason\?\.message \?\? reason\)\)/)
+  assert.match(code, /const failure = explainRenameFailure\(error\)/)
+  assert.match(code, /className: 'dsm-dialog-error', role: 'alert' \}, text,/)
+  // A projection refresh never gates the dialog: a slow list pull is not a
+  // failed rename.
+  assert.match(code, /Promise\.resolve\(ctx\.sessions\.refresh\?\.\(\)\)\.catch\(\(\) => \{\}\)/)
+})
+
+test('every literal copy key exists in both dictionaries', () => {
+  const keysOf = source => new Set([...source.matchAll(/^\s*'([\w.]+)':/gm)].map(match => match[1]))
+  const zhBlock = code.slice(code.indexOf('const zh = {'), code.indexOf('const en = {'))
+  const enBlock = code.slice(code.indexOf('const en = {'), code.indexOf('const css = `'))
+  const zh = keysOf(zhBlock)
+  const en = keysOf(enBlock)
+  // Only literal keys: template keys are built from validated unions elsewhere.
+  const used = new Set([...code.matchAll(/\bt\('([\w.]+)'/g)].map(match => match[1]))
+  for (const key of used) {
+    assert.ok(zh.has(key), `zh dictionary is missing ${key}`)
+    assert.ok(en.has(key), `en dictionary is missing ${key}`)
+  }
+})
+
+test('host-half notices resolve through the locale service', () => {
+  const host = code.slice(code.indexOf('function apply(ctx)'))
+  assert.match(host, /const hostT = ctx\.locale\.bind\(NS\)/)
+  assert.match(host, /hostT\('notice\.failed'\)/)
+  assert.match(host, /hostT\('notice\.sessionActive'\)/)
+  // The zh dictionary is a fallback for rendering, never the host's copy source.
+  assert.equal(/zh\[/.test(host), false)
+})
+
+test('rows are memoised over stable props', () => {
+  // A memoised row is only worth it if every prop is stable or primitive: the
+  // region used to hand each row the whole drag state and freshly built
+  // callbacks, which defeated any comparison.
+  assert.match(code, /const SessionRowCell = React\.memo\(SessionRow\)/)
+  assert.match(code, /h\(SessionRowCell, \{\n\s*key: sessionId,/)
+  assert.match(code, /dragging: drag\?\.sessionId === sessionId,/)
+  assert.match(code, /dropHalf: dropTarget\?\.sessionId === sessionId \? dropTarget\.half : null,/)
+  // Stable callbacks and per-generation caches.
+  assert.match(code, /const handleDragOverRow = useCallback\(\(next\) => setDropTarget\(\(current\) => \{/)
+  assert.match(code, /const handleDragEnd = useCallback\(\(move\) => \{/)
+  assert.match(code, /const handleAssignFolder = useCallback\(\(folderId\) => \{/)
+  assert.match(code, /const statusCache = useMemo\(\(\) => \{/)
+  assert.match(code, /const folderOptionsCache = useMemo\(\(\) => \{/)
+  // The minute tick lives in the cells, not in the region.
+  assert.match(code, /const now = useSyncExternalStore\(clock\.subscribe, clock\.getSnapshot\)/)
+  assert.equal(/const now = useNow\(\)/.test(code), false)
 })

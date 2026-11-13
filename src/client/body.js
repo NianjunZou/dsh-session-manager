@@ -15,6 +15,13 @@
  * - user-visible copy comes from the plugin's locale namespace;
  * - every action is a Host service call, so nothing here is a second source of
  *   truth for session, workspace, pin, archive or order state.
+ * Sections, in file order:
+ *   1. constants and small helpers (gesture, stores, formatting)
+ *   2. copy (zh / en) — every user-visible string lives here
+ *   3. styles — one stylesheet, read by the region's style effect
+ *   4. view components — row, section, folder, dialogs
+ *   5. the region — state, derivations, and the rendered tree
+ *   6. the host half — registration, stores, and host-service actions
  * License: MIT.
  */
 
@@ -31,10 +38,10 @@ const {
   IconChevronRightOutlineRegular, IconPlusOutlineRegular, IconPinFillRegular, IconCloseFillRegular,
   IconEllipsisOutlineRegular, IconChevronsUpDownOutlineRegular, IconClockOutlineRegular,
   IconArchiveOffOutlineRegular, IconArchiveCheckOutlineRegular, IconQueueOutlineRegular,
-  IconCheckOutlineRegular,
+  IconCheckOutlineRegular, IconCheckCircleOutlineRegular,
 } = primitives
 const h = React.createElement
-const { useCallback, useEffect, useMemo, useState, useSyncExternalStore } = React
+const { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } = React
 
 /** Locale namespace registered by this plugin. */
 const NS = 'dsh-session-manager'
@@ -76,6 +83,10 @@ const PRIORITY_LEGACY = Object.freeze({ red: 'p1', amber: 'p2', green: 'p3', blu
  * @param {string|undefined} value - stored value.
  * @returns {string|undefined} a level id, or `undefined` for "no label".
  */
+/* ------------------------------------------------------------------ *
+ * Constants and small helpers.
+ * ------------------------------------------------------------------ */
+
 function priorityLevel(value) {
   if (value === undefined || value === null) return undefined
   const id = PRIORITY_LEGACY[value] ?? value
@@ -150,6 +161,50 @@ function folderStore(require) {
 }
 
 /**
+ * Whether this window renders the region at all.
+ *
+ * Persisted through the same store seat as the other plugin-owned state, so the
+ * bundle never names a Web Storage API itself. Yielding disposes the slot
+ * registration — a null-rendering occupant would still shadow the shipped
+ * browser, so disposal is the only real revert.
+ */
+const TAKEOVER_KEY = 'dsh-plugin:dsh-session-manager:takeover'
+
+/**
+ * @param {Function} require - the module loader's resolve function.
+ * @returns {object} the takeover store (`{ mode: 'on' | 'off' }`).
+ */
+function takeoverStore(require) {
+  try {
+    const { createSnapshotStore } = require('@deepseek-ai/dsh-client-store')
+    return createSnapshotStore({ mode: 'on' }, { persist: { name: TAKEOVER_KEY } })
+  } catch {
+    return observable({ mode: 'on' })
+  }
+}
+
+/** Namespaced key for the plugin-owned auto-archive policy. */
+const AUTO_ARCHIVE_KEY = 'dsh-plugin:dsh-session-manager:auto-archive'
+
+/**
+ * The auto-archive policy, persisted through the store seat.
+ *
+ * Off is the shipped value; a policy is a whole number of idle days. The sweep
+ * only ever archives (reversible), never deletes, and never touches pinned,
+ * running or current sessions.
+ * @param {Function} require - the module loader's resolve function.
+ * @returns {object} the policy store.
+ */
+function autoArchiveStore(require) {
+  try {
+    const { createSnapshotStore } = require('@deepseek-ai/dsh-client-store')
+    return createSnapshotStore(AUTO_ARCHIVE_INIT, { persist: { name: AUTO_ARCHIVE_KEY } })
+  } catch {
+    return observable(AUTO_ARCHIVE_INIT)
+  }
+}
+
+/**
  * Generate a stable folder id. The `f-` prefix keeps folder ids distinct from
  * the row-menu action ids (`folder:new`, `folder:none`).
  * @returns {string} a new folder id.
@@ -176,10 +231,17 @@ const DRAG_THRESHOLD_PX = 4
  * gesture owns the interaction, and a gesture that ends in a gap still commits
  * from the last marked target.
  */
+// The sidebar is one scroller reused by four views. Remembering its offset per
+// view keeps a switch (or a takeover round-trip) from throwing the reader back
+// to the top of a long list.
+const scrollMemory = new Map()
+
+let gestureForwarding = false
+
 const pointerGesture = {
   kind: null, id: null, accountId: null, order: null, scope: null,
   startX: 0, startY: 0, pointerId: null, active: false, moved: false,
-  targetId: null, half: null, targetScope: null,
+  targetId: null, half: null, targetScope: null, folderId: null,
 }
 
 /**
@@ -264,12 +326,65 @@ function gestureDown(kind, id, event, extra) {
   pointerGesture.targetId = null
   pointerGesture.half = null
   pointerGesture.targetScope = null
+  pointerGesture.folderId = null
   pointerGesture.published = false
   pointerGesture.edge = 0
+  pointerGesture.element = event.currentTarget ?? null
   // Capture keeps the gesture alive while the pointer crosses other elements.
-  event.currentTarget?.setPointerCapture?.(event.pointerId)
+  // A host that refuses or silently loses capture would otherwise deliver the
+  // moves to whatever sits under the pointer and the gesture would die without
+  // a trace, so the same stream is forwarded to the row element.
+  try { event.currentTarget?.setPointerCapture?.(event.pointerId) } catch { /* forwarding covers it */ }
+  bindGestureForwarding()
   // A press inside a workspace row must not also start the workspace gesture.
   event.stopPropagation?.()
+}
+
+/**
+ * Forward pointer events to the gesture element when capture did not deliver
+ * them (a refused `setPointerCapture`, or a host that drops capture mid-drag).
+ * A delivered event targets the element itself, so it is never forwarded twice.
+ */
+function bindGestureForwarding() {
+  if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return
+  if (gestureForwarding) return
+  gestureForwarding = true
+  document.addEventListener('pointermove', forwardGesture, true)
+  document.addEventListener('pointerup', forwardGesture, true)
+  document.addEventListener('pointercancel', forwardGesture, true)
+}
+
+/** Stop forwarding once the gesture is over. */
+function unbindGestureForwarding() {
+  if (!gestureForwarding) return
+  gestureForwarding = false
+  document.removeEventListener('pointermove', forwardGesture, true)
+  document.removeEventListener('pointerup', forwardGesture, true)
+  document.removeEventListener('pointercancel', forwardGesture, true)
+}
+
+/**
+ * Re-dispatch one pointer event on the gesture's own element.
+ * @param {object} event - the event seen on the document.
+ */
+function forwardGesture(event) {
+  if (pointerGesture.kind === null) { unbindGestureForwarding(); return }
+  if (event.button !== undefined && event.type === 'pointerup' && event.button !== 0) return
+  const element = pointerGesture.element
+  if (!element || element === event.target || element.contains?.(event.target)) return
+  const clone = new PointerEvent(event.type, {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    pointerId: event.pointerId,
+    pointerType: event.pointerType,
+    isPrimary: event.isPrimary,
+    button: event.type === 'pointerup' ? 0 : event.button,
+    buttons: event.type === 'pointerup' ? 0 : event.buttons,
+    clientX: event.clientX,
+    clientY: event.clientY,
+  })
+  element.dispatchEvent(clone)
 }
 
 /**
@@ -341,6 +456,8 @@ function gestureUp(kind, commit) {
   pointerGesture.active = false
   pointerGesture.moved = wasActive
   pointerGesture.edge = 0
+  pointerGesture.element = null
+  unbindGestureForwarding()
   if (!wasActive) return
   flushMark()
   commit(move)
@@ -369,8 +486,15 @@ function elementUnder(event, attribute) {
 const STYLE_MARKER = 'data-dsh-session-manager'
 
 /** Copy used by the region. Params are `{n}` placeholders. */
+/* ------------------------------------------------------------------ *
+ * Copy — one dictionary per shipped language.
+ * ------------------------------------------------------------------ */
+
 const zh = {
   'section.workspaces': '工作区',
+  'attention.show': '需要处理 {n}',
+  'attention.exit': '退出「需要处理」',
+  'attention.none': '没有等待你处理的会话',
   'section.pinned': '置顶会话',
   'section.ungrouped': '未分组',
   'section.unmarked': '未标记',
@@ -379,12 +503,15 @@ const zh = {
   'action.addWorkspace': '添加工作区',
   'sessions.expand': '展开其余 {n} 个会话',
   'sessions.collapse': '收起',
+  'sessions.loading': '加载中…',
   'search.aria': '会话搜索',
   'search.placeholder': '搜索会话',
+  'search.loading': '搜索中…',
   'search.clear': '清除搜索',
   'search.none': '没有匹配的会话',
   'search.more': '结果较多，请细化查询',
   'search.failed': '搜索失败：',
+  'search.local': '内容搜索未开启，仅匹配标题与工作区',
   'status.approval': '等待批准',
   'status.planReview': '等待计划确认',
   'status.question': '等待回答',
@@ -419,8 +546,29 @@ const zh = {
   'view.archivedDefault': '隐藏归档',
   'view.archivedShow': '显示归档',
   'view.archivedOnly': '只看归档',
+  'view.autoArchive': '自动归档（可恢复）',
+  'view.yield': '回到官方会话区',
+  'toggle.yield': '暂停接管，回到官方会话区',
+  'toggle.resume': '启用会话管理器',
+  'view.autoArchiveOff': '不自动归档',
+  'view.autoArchiveDays': '{n} 天未活动',
+  'view.autoArchiveDaysCount': '{n} 天未活动（将归档 {count} 个）',
+  'notice.autoArchived': '已自动归档 {n} 个会话，可在「只看归档」里恢复',
+  'bulk.archive': '归档',
+  'bulk.selectMode': '批量选择',
+  'bulk.selectModeFull': '批量选择（仅当前工作区）',
+  'bulk.moveTo': '移到子目录',
+  'bulk.all': '全选本工作区',
+  'bulk.exit': '完成',
+  'bulk.count': '已选 {n} 个',
+  'bulk.scope': '仅当前工作区',
+  'notice.filedMany': '已把 {n} 个会话移入「{name}」',
+  'notice.archiveBulkFailed': '有 {n} 个会话没能归档（可能在运行或已归档）',
+  'notice.filed': '已移入「{name}」',
   'view.options': '视图选项',
   'dialog.renameTitle': '重命名会话',
+  'rename.presetGone': '无法重命名：该会话的 Agent 预设「{preset}」已不在当前 profile 中，宿主无法恢复它。请恢复该预设后再试。',
+  'rename.resumeFailed': '无法重命名：宿主恢复该会话失败（详情见下方原文）。',
   'dialog.nameLabel': '会话名称',
   'dialog.save': '保存',
   'dialog.cancel': '取消',
@@ -451,8 +599,6 @@ const zh = {
   'folders.moveUp': '上移',
   'folders.moveDown': '下移',
   'folders.delete': '删除子目录',
-  'folders.empty': '空目录',
-  'folders.unfiledEmpty': '没有未分类会话',
   'folders.moveTo': '移到子目录',
   'folders.none': '未分类',
   'folders.newHere': '新建子目录…',
@@ -478,6 +624,9 @@ const zh = {
 
 const en = {
   'section.workspaces': 'Workspaces',
+  'attention.show': 'Needs you {n}',
+  'attention.exit': 'Leave “needs you”',
+  'attention.none': 'Nothing is waiting on you',
   'section.pinned': 'Pinned',
   'section.unmarked': 'Unlabelled',
   'section.ungrouped': 'Ungrouped',
@@ -486,12 +635,15 @@ const en = {
   'action.addWorkspace': 'Add workspace',
   'sessions.expand': 'Show {n} more sessions',
   'sessions.collapse': 'Collapse',
+  'sessions.loading': 'Loading…',
   'search.aria': 'Session search',
   'search.placeholder': 'Search sessions',
+  'search.loading': 'Searching…',
   'search.clear': 'Clear search',
   'search.none': 'No matching sessions',
   'search.more': 'More results — refine your query',
   'search.failed': 'Search failed: ',
+  'search.local': 'Content search is off — matching titles and workspaces only',
   'status.approval': 'Waiting for approval',
   'status.planReview': 'Waiting for plan review',
   'status.question': 'Waiting for an answer',
@@ -526,8 +678,29 @@ const en = {
   'view.archivedDefault': 'Hide archived',
   'view.archivedShow': 'Show archived',
   'view.archivedOnly': 'Archived only',
+  'view.autoArchive': 'Auto-archive (reversible)',
+  'view.yield': 'Back to the shipped session list',
+  'toggle.yield': 'Pause takeover and restore the shipped list',
+  'toggle.resume': 'Enable the session manager',
+  'view.autoArchiveOff': 'Off',
+  'view.autoArchiveDays': 'After {n} idle days',
+  'view.autoArchiveDaysCount': 'After {n} idle days ({count} would be archived)',
+  'notice.autoArchived': 'Auto-archived {n} sessions — restore them from “Archived only”',
+  'bulk.archive': 'Archive',
+  'bulk.selectMode': 'Select sessions',
+  'bulk.selectModeFull': 'Select sessions (this workspace only)',
+  'bulk.moveTo': 'Move to folder',
+  'bulk.all': 'Select all here',
+  'bulk.exit': 'Done',
+  'bulk.count': '{n} selected',
+  'bulk.scope': 'This workspace only',
+  'notice.filedMany': 'Filed {n} sessions into “{name}”',
+  'notice.archiveBulkFailed': '{n} sessions could not be archived (running or already archived)',
+  'notice.filed': 'Filed into “{name}”',
   'view.options': 'View options',
   'dialog.renameTitle': 'Rename session',
+  'rename.presetGone': 'Cannot rename: this session records agent preset “{preset}”, which this profile no longer mounts, so the host cannot resume it. Restore the preset and try again.',
+  'rename.resumeFailed': 'Cannot rename: the host failed to resume this session (details below).',
   'dialog.nameLabel': 'Session name',
   'dialog.save': 'Save',
   'dialog.cancel': 'Cancel',
@@ -558,8 +731,6 @@ const en = {
   'folders.moveUp': 'Move up',
   'folders.moveDown': 'Move down',
   'folders.delete': 'Delete subfolder',
-  'folders.empty': 'Empty folder',
-  'folders.unfiledEmpty': 'No unfiled sessions',
   'folders.moveTo': 'Move to subfolder',
   'folders.none': 'Unfiled',
   'folders.newHere': 'New subfolder…',
@@ -589,6 +760,10 @@ const en = {
  * from a shipped `--dsw-alias-*` token, so themes (including third-party ones)
  * apply without the plugin knowing about them.
  */
+/* ------------------------------------------------------------------ *
+ * Styles — the region owns its own stylesheet; no host CSS is edited.
+ * ------------------------------------------------------------------ */
+
 const css = `
 /* Typography and metrics follow the shipped browsing rows (ui-workspace
  * Rows.module.css / WorkspaceBrowser.module.css) so the region reads as part
@@ -598,6 +773,9 @@ const css = `
 .dsm-head{display:flex;align-items:center;gap:2px;flex:none;padding:0 8px;height:36px}
 .dsm-head-label{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-primary);padding-inline-start:4px}
 .dsm-head-spacer{flex:1}
+.dsm-takeover{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:28px;height:28px;flex:none;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.dsm-takeover:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dsm-takeover:focus-visible{outline:2px solid var(--dsw-alias-focus-ring);outline-offset:-2px}
 .dsm-head-action{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:26px;height:26px;flex:0 0 26px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
 .dsm-head-action:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
 .dsm-head-action:focus-visible{outline:2px solid var(--dsw-alias-focus-ring);outline-offset:-2px}
@@ -606,11 +784,17 @@ const css = `
 .dsm-body{flex:1;min-height:0;overflow-y:auto;padding:0 8px 8px}
 .dsm-list{display:flex;flex-direction:column;gap:2px}
 .dsm-folder-body{display:flex;flex-direction:column;gap:2px}
-.dsm-folder-count{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.dsm-folder-count{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
 .dsm-folder-mark{flex:none;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-business-primary)}
+/* Blue already means drag/drop and selection in this region; a folder that
+   holds a session waiting on the operator uses the waiting colour. */
+.dsm-folder-mark[data-tone='pending']{background:var(--dsw-alias-state-warn-primary)}
 .dsm-folder-group{margin:1px 0 3px;position:relative}
+.dsm-folder-group[data-dsm-folder-side='before'] .dsm-folder-row{box-shadow:inset 0 2px 0 var(--dsw-alias-state-business-primary)}
+.dsm-folder-group[data-dsm-folder-side='after'] .dsm-folder-row{box-shadow:inset 0 -2px 0 var(--dsw-alias-state-business-primary)}
+.dsm-folder-group[data-dsm-drop='true'] .dsm-folder-row{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 14%,transparent);border-radius:var(--dsw-radius-sm);outline:1px dashed var(--dsw-alias-state-business-primary);outline-offset:-1px}
 .dsm-folder-row{display:flex;align-items:center;height:28px;padding:0 4px}
-.dsm-folder-header{display:flex;align-items:center;flex:1;min-width:0;height:28px;padding:0 8px;padding-inline-start:38px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:14px;line-height:20px;font-weight:600;text-align:left;cursor:pointer}
+.dsm-folder-header{display:flex;align-items:center;flex:1;min-width:0;height:28px;padding:0 8px;padding-inline-start:44px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:14px;line-height:20px;font-weight:400;text-align:left;cursor:pointer}
 .dsm-folder-header:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}
 .dsm-folder-header:focus-visible{outline:2px solid var(--dsw-alias-focus-ring);outline-offset:-2px}
 .dsm-folder-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -618,7 +802,6 @@ const css = `
 .dsm-folder-action{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:24px;height:20px;flex:0 0 24px;margin-right:4px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);opacity:0;cursor:pointer}
 .dsm-folder-row:hover .dsm-folder-action,.dsm-folder-row:focus-within .dsm-folder-action{opacity:1}
 .dsm-folder-action:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
-.dsm-empty-folder{display:flex;align-items:center;height:32px;padding-inline-start:32px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .dsm-dialog-hint{margin:8px 0 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .dsm-dialog-body{margin:0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}
 .dsm-dialog-error{margin:8px 0 0;color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px}
@@ -637,8 +820,13 @@ const css = `
 .dsm-heading-header:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dsm-heading-header:focus-visible{outline:2px solid var(--dsw-alias-focus-ring);outline-offset:-2px}
 .dsm-heading-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-secondary)}
-.dsm-heading-count{flex:none;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
+.dsm-heading-count{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
 .dsm-workspace-action{margin-right:4px}
+.dsm-workspace-action[data-active='true']{opacity:1;color:var(--dsw-alias-state-business-primary)}
+/* Bulk selection is a primary capability of this region: its seat stays
+   visible at rest instead of appearing only on hover. */
+.dsm-workspace-select{opacity:.55}
+.dsm-section-row:hover .dsm-workspace-select,.dsm-workspace-select:focus-visible{opacity:1}
 .dsm-section-row{position:sticky;top:0;z-index:2;display:flex;align-items:center;height:32px;background:var(--dsw-specific-sidebar-fill)}
 /* macOS: the sidebar is window vibrancy and the host makes its own fill
  * transparent there, so a themed opaque fill reads as a foreign slab (its
@@ -652,12 +840,12 @@ const css = `
  * header carries a folder-plus seat. It is only rendered while the workspace
  * has no folders; once one exists, the always-visible strip owns creation. */
 .dsm-workspace-folder{position:relative;opacity:1}
-.dsm-workspace-folder::after{content:"+";position:absolute;right:0;bottom:-1px;font-size:10px;line-height:1;font-weight:700;color:var(--dsw-alias-label-tertiary);pointer-events:none}
-.dsm-workspace-folder:hover::after{color:var(--dsw-alias-label-primary)}
+.dsm-workspace-folder .dsm-folder-plus{position:absolute;right:-1px;bottom:0;pointer-events:none;color:var(--dsw-alias-label-tertiary)}
+.dsm-workspace-folder:hover .dsm-folder-plus{color:var(--dsw-alias-label-primary)}
 .dsm-section-header{display:flex;align-items:center;flex:1;min-width:0;height:32px;touch-action:none;padding:0 8px;padding-inline-start:20px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:left;cursor:pointer}
 .dsm-section-header:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsm-section-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;margin:0 6px 0 4px}
-.dsm-section-count{flex:none;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.dsm-section-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;font-weight:600;margin:0 6px 0 4px}
+.dsm-section-count{flex:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
 .dsm-chevron{flex:none;display:inline-flex;align-items:center;justify-content:center;width:14px;color:var(--dsw-alias-label-tertiary)}
 /* The 16x20 leading cell the shipped rows use for a status dot or a folder. */
 .dsm-slot{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;height:20px;color:var(--dsw-alias-label-tertiary)}
@@ -678,6 +866,9 @@ const css = `
 .dsm-bulk-action{box-sizing:border-box;height:22px;padding:0 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-xs);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;line-height:20px;cursor:pointer}
 .dsm-bulk-action:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .dsm-bulk-action:disabled{color:var(--dsw-alias-label-tertiary);cursor:default;opacity:.6}
+.dsm-bulk-sep{flex:none;width:1px;height:14px;margin:0 2px;background:var(--dsw-alias-border-l1)}
+.dsm-bulk-secondary{border-color:transparent;color:var(--dsw-alias-label-secondary)}
+.dsm-bulk-secondary:hover:not(:disabled){color:var(--dsw-alias-label-primary)}
 .dsm-bulk-action[data-level="p1"]{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-state-business-primary)}
 .dsm-bulk-action[data-level="p4"]{color:var(--dsw-alias-label-secondary)}
 .dsm-bulk-hint{flex:1 0 100%;font-size:10px;line-height:14px;color:var(--dsw-alias-label-tertiary)}
@@ -687,15 +878,27 @@ const css = `
  * shipped glyphs: a bold P in a hairline frame reads as "priority levels" and
  * turns accent-coloured while the view is open. */
 .dsm-pbadge{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:16px;height:16px;border:1px solid currentColor;border-radius:var(--dsw-radius-xs);font-size:10px;line-height:1;font-weight:700;letter-spacing:0}
+.dsm-attn-badge{display:inline-flex;align-items:center;justify-content:center;min-width:15px;height:15px;margin-inline-start:2px;padding:0 3px;border-radius:7px;font-size:10px;line-height:15px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary-inverted);background:var(--dsw-alias-state-business-primary)}
 .dsm-head-action[data-active="true"] .dsm-pbadge{color:var(--dsw-alias-label-primary-inverted);background:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}
 .dsm-row:has(.dsm-select-box:checked){background:var(--dsw-alias-interactive-bg-hover)}
 .dsm-levels{display:flex;flex-direction:column}
 .dsm-pin{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;height:20px;margin-left:6px;color:var(--dsw-alias-label-caption)}
 .dsm-row[data-flat="true"]{padding-inline-start:14px}
-.dsm-row{position:relative;display:flex;align-items:center;box-sizing:border-box;width:100%;height:32px;gap:0;padding:0 8px;padding-inline-start:32px;border-radius:var(--dsw-radius-md);color:var(--dsw-alias-label-primary);cursor:pointer;user-select:none;-webkit-user-drag:none;touch-action:none}
+.dsm-row[data-stacked="true"]{height:auto;min-height:48px;padding-top:4px;padding-bottom:4px;contain-intrinsic-size:auto 48px}
+.dsm-stack{display:flex;flex-direction:column;justify-content:center;flex:1;min-width:0;margin:0 6px 0 4px}
+.dsm-stack-main{display:flex;align-items:center;gap:4px;min-width:0}
+.dsm-stack-main .dsm-title{flex:1;margin:0}
+.dsm-stack-sub{display:flex;align-items:center;gap:6px;min-width:0;margin-top:1px}
+.dsm-stack-sub .dsm-snippet{max-width:60%}
+.dsm-stack-sub .dsm-workspace{flex:none;max-width:40%}
+.dsm-folder-group .dsm-row{padding-inline-start:48px}
+.dsm-row{content-visibility:auto;contain-intrinsic-size:auto 32px;position:relative;display:flex;align-items:center;box-sizing:border-box;width:100%;height:32px;gap:0;padding:0 8px;padding-inline-start:32px;border-radius:var(--dsw-radius-md);color:var(--dsw-alias-label-primary);cursor:pointer;user-select:none;-webkit-user-drag:none;touch-action:none}
 .dsm-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dsm-row[data-current="true"]{background:var(--dsw-alias-interactive-bg-hover)}
 .dsm-row[data-archived="true"]{opacity:.6}
+/* In the archived-only view every row is archived: dimming them all reads as
+   a disabled list rather than as a state marker. */
+.dsm-body[data-filter="only"] .dsm-row[data-archived="true"]{opacity:1}
 .dsm-row[data-dragging="true"]{opacity:.45}
 .dsm-row[data-drop="before"]{box-shadow:inset 0 2px 0 0 var(--dsw-alias-state-business-primary)}
 .dsm-row[data-drop="after"]{box-shadow:inset 0 -2px 0 0 var(--dsw-alias-state-business-primary)}
@@ -721,6 +924,7 @@ const css = `
 .dsm-dot-slot svg[data-state='ongoing'] circle:first-of-type{opacity:.4}
 .dsm-dot-slot svg[data-state='ongoing'] *{animation-duration:1.15s}
 .dsm-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:14px;line-height:20px;margin:0 6px 0 4px}
+.dsm-hit{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 18%,transparent);border-radius:2px;color:inherit;font-weight:600}
 .dsm-row[data-unread="true"] .dsm-title{font-weight:600}
 .dsm-workspace{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
 .dsm-snippet{flex:0 1 auto;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
@@ -740,8 +944,11 @@ const css = `
 .dsm-search-meta{padding:10px 12px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
 .dsm-empty{display:flex;flex-direction:column;gap:8px;padding:16px 12px;text-align:center;font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
 .dsm-empty-action{align-self:center;padding:0;border:0;background:none;font:inherit;font-size:13px;line-height:20px;color:var(--dsw-alias-link);cursor:pointer}
-.dsm-notice{margin:8px;padding:8px;border:1px solid var(--dsw-alias-state-warn-primary);border-radius:var(--dsw-radius-md);font-size:12px;line-height:18px}
+.dsm-notice{margin:8px;padding:8px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.dsm-notice[data-tone='warn']{border-color:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-label-primary)}
+.dsm-notice[data-tone='success']{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}
 .dsm-rename-form{display:grid;gap:12px}
+.dsm-dialog-detail{margin-top:4px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);word-break:break-word}
 .dsm-rename-input{box-sizing:border-box;width:100%;padding:6px 8px;font:inherit;font-size:14px;font-weight:400;line-height:22px;color:var(--dsw-alias-label-primary);background:transparent;border:1px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-lg)}
 .dsm-dialog-actions{display:flex;justify-content:flex-end;gap:8px}
 .dsm-dialog-actions button{font:inherit;font-size:13px;padding:4px 12px;cursor:pointer}
@@ -753,14 +960,30 @@ const css = `
  * re-rendering the region on every host snapshot.
  * @returns {number} current epoch ms.
  */
-function useNow() {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 60_000)
-    return () => window.clearInterval(id)
-  }, [])
-  return now
-}
+/**
+ * One minute clock shared by every time cell.
+ *
+ * The region used to hold `now` in state, so one minute tick re-rendered the
+ * whole tree; subscribing per cell keeps the tick local to the labels that show
+ * it. The interval exists only while some cell is mounted.
+ */
+const clock = (() => {
+  let now = Date.now()
+  let timer = null
+  const listeners = new Set()
+  const tick = () => { now = Date.now(); for (const listener of listeners) listener() }
+  return {
+    getSnapshot: () => now,
+    subscribe(listener) {
+      listeners.add(listener)
+      if (timer === null) timer = window.setInterval(tick, 60_000)
+      return () => {
+        listeners.delete(listener)
+        if (listeners.size === 0 && timer !== null) { window.clearInterval(timer); timer = null }
+      }
+    },
+  }
+})()
 
 /**
  * One row's status presentation: a single dot, with the full composition as its
@@ -774,6 +997,10 @@ function useNow() {
  * @param {object} props - `{ status, t }` where status is a `statusOf` record.
  * @returns {object} the row's leading cell.
  */
+/* ------------------------------------------------------------------ *
+ * View components.
+ * ------------------------------------------------------------------ */
+
 function StatusCell({ status, t }) {
   const plan = dotPlan(status)
   const label = []
@@ -813,7 +1040,8 @@ function StatusCell({ status, t }) {
  * @param {object} props - `{ status, updatedAt, now, t }`.
  * @returns {object} the time cell.
  */
-function TimeCell({ status, updatedAt, now, t }) {
+function TimeCell({ status, updatedAt, t }) {
+  const now = useSyncExternalStore(clock.subscribe, clock.getSnapshot)
   let text = formatRelative(relativeTime(Number(updatedAt) || 0, now), {
     now: t('time.now'), minutes: t('time.minutes'), hours: t('time.hours'),
     days: t('time.days'), months: t('time.months'), years: t('time.years'),
@@ -832,6 +1060,45 @@ function TimeCell({ status, updatedAt, now, t }) {
 }
 
 /**
+ * The row's hover text: the full title, where the session lives, and its
+ * directory. Titles truncate in a 32px row, so the tooltip is often the only
+ * place the whole label is readable.
+ * @param {string} title - the row title.
+ * @param {string|undefined} workspaceLabel - the owning workspace, when known.
+ * @param {object|undefined} summary - the session summary.
+ * @returns {string} a multi-line tooltip.
+ */
+function hoverTitle(title, workspaceLabel, summary) {
+  const lines = [title]
+  if (workspaceLabel) lines.push(workspaceLabel)
+  if (summary?.cwd) lines.push(summary.cwd)
+  return lines.join('\n')
+}
+
+/**
+ * Split a title into plain and highlighted parts for the search rows.
+ *
+ * `matchRanges` returns merged `[start, end)` offsets over the same string the
+ * row renders, so the split is byte-for-byte the title text rather than a
+ * normalized copy that would shift offsets.
+ * @param {string} title - the row's title.
+ * @param {Array<[number, number]>|undefined} ranges - ranges to mark.
+ * @returns {Array<string|object>} text and `<mark>` nodes in order.
+ */
+function titleParts(title, ranges) {
+  if (!Array.isArray(ranges) || ranges.length === 0) return [title]
+  const parts = []
+  let cursor = 0
+  for (const [start, end] of ranges) {
+    if (start > cursor) parts.push(title.slice(cursor, start))
+    parts.push(h('mark', { className: 'dsm-hit', key: `hit-${start}-${end}` }, title.slice(start, end)))
+    cursor = end
+  }
+  if (cursor < title.length) parts.push(title.slice(cursor))
+  return parts
+}
+
+/**
  * One session row: leading status cell, marks, title, time, and the actions menu.
  *
  * The row is the drag source and the drop target for the durable reorder: the
@@ -843,10 +1110,11 @@ function TimeCell({ status, updatedAt, now, t }) {
  */
 function SessionRow({
   sessionId, summary, status, accountId, accountOrder, currentId, archived, pinned,
-  now, t, drag, dropTarget, onDragStart, onDragOverRow, onDragEnd, onOpen, onSelectAction, onMove,
-  workspaceLabel, snippet, canReorder = false, priority, flat = false,
+  t, dragging = false, dropHalf = null, onDragStart, onDragOverRow, onDragEnd, onOpen, onSelectAction, onMove,
+  workspaceLabel, snippet, titleMatch, canReorder = false, priority, flat = false,
   pinnedSection = false, selectable = false, selected = false, onToggleSelect, toggleLabel,
-  groupedByPriority = false, folderOptions, scope,
+  groupedByPriority = false, folderOptions, scope, onFolderOver, onAssignFolder, bulkMulti = false,
+  stacked = false,
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuItems = useMemo(() => {
@@ -907,7 +1175,20 @@ function SessionRow({
   }, [archived, folderOptions, pinned, summary?.cwd, t])
 
   const title = String(summary?.displayTitle || summary?.title || sessionId)
-  const drop = dropTarget?.sessionId === sessionId ? dropTarget.half : null
+  const drop = dropHalf
+  const titleNode = h('span', { className: 'dsm-title', title: hoverTitle(title, workspaceLabel, summary) }, ...titleParts(title, titleMatch))
+  const workspaceNode = workspaceLabel === undefined ? null : h('span', { className: 'dsm-workspace' }, workspaceLabel)
+  const snippetNode = snippet === undefined || snippet === '' ? null : h('span', { className: 'dsm-snippet', title: snippet }, snippet)
+  const pinnedNode = pinned && !archived && !pinnedSection
+    ? h('span', { className: 'dsm-pin', role: 'img', 'aria-label': t('mark.pinned'), title: t('mark.pinned') },
+      h(IconPinFillRegular, { size: 14 }))
+    : null
+  const priorityNode = priority === undefined || groupedByPriority ? null : h('span', {
+    className: 'dsm-priority',
+    title: t(`priority.${priority}`),
+    'data-level': priority,
+  }, priority.toUpperCase())
+  const hasSub = workspaceNode !== null || snippetNode !== null
   const row = h('div', {
     className: 'dsm-row',
     'data-priority': priority,
@@ -922,13 +1203,16 @@ function SessionRow({
     'data-current': String(sessionId === currentId),
     'data-archived': String(archived),
     'data-unread': String(status.unread),
-    'data-dragging': String(drag?.sessionId === sessionId),
+    'data-dragging': String(dragging),
     'data-drop': drop || undefined,
     'data-dsm-session': sessionId,
     'data-dsm-scope': scope,
     // A row directly under a heading is a top-level item, not a nested one: it
     // keeps the heading's own shallow column instead of the project indent.
     'data-flat': flat ? 'true' : undefined,
+    // Search results stack the title over its provenance: a 32px line cannot
+    // hold title + workspace + snippet without shrink-to-nothing titles.
+    'data-stacked': stacked ? 'true' : undefined,
     'aria-selected': String(sessionId === currentId),
     onClick: (event) => {
       // A gesture that reordered rows must not also open one.
@@ -977,9 +1261,55 @@ function SessionRow({
         pointerGesture.published = true
         onDragStart({ sessionId, accountId })
       }
+      // A folder header is a second kind of drop target: the row under the
+      // pointer wins when there is one, otherwise the folder group it sits in.
+      if (onFolderOver !== undefined) {
+        const hit = elementUnder(event, 'data-dsm-folder-id')
+        const folderId = hit?.getAttribute?.('data-dsm-folder-id') ?? null
+        if (pointerGesture.folderId !== folderId) {
+          pointerGesture.folderId = folderId
+          onFolderOver(folderId)
+        }
+      }
     } : undefined,
-    onPointerUp: canReorder ? () => { gestureUp('session', onDragEnd) } : undefined,
-    onPointerCancel: canReorder ? () => { gestureUp('session', onDragEnd) } : undefined,
+    onPointerUp: canReorder ? (event) => {
+      let folderId = pointerGesture.folderId
+      const active = pointerGesture.active
+      const hasRowTarget = pointerGesture.targetId !== null
+      // A fast flick can release on a folder without a move event that marked
+      // it; the release point decides, not the last published marker.
+      if (folderId === null && onAssignFolder !== undefined && event !== undefined) {
+        const hit = elementUnder(event, 'data-dsm-folder-id')
+        if (hit?.getAttribute?.('data-dsm-folder-ws') === accountId) {
+          folderId = hit.getAttribute('data-dsm-folder-id')
+        }
+      }
+      pointerGesture.folderId = null
+      onFolderOver?.(null)
+      // Filing into a folder is a drop on the folder, not a reorder: only when
+      // the pointer never marked a row, so the two gestures cannot fight.
+      // A multi-selection files as a whole, so a row target cannot veto it.
+      if (active && (bulkMulti || !hasRowTarget) && folderId !== null && onAssignFolder !== undefined) {
+        pointerGesture.kind = null
+        pointerGesture.active = false
+        pointerGesture.moved = true
+        pointerGesture.element = null
+        unbindGestureForwarding()
+        flushMark()
+        // The drag is over: clearing it through the same end-of-gesture path as
+        // a reorder, or the row keeps its `data-dragging` half-opacity and the
+        // filed row reads as a different colour.
+        onDragEnd(null)
+        onAssignFolder(folderId)
+        return
+      }
+      gestureUp('session', onDragEnd)
+    } : undefined,
+    onPointerCancel: canReorder ? () => {
+      pointerGesture.folderId = null
+      onFolderOver?.(null)
+      gestureUp('session', onDragEnd)
+    } : undefined,
   },
   // The priority view lists rows for bulk editing: the checkbox leads the row so
   // the selection column is fixed, and the title still opens the session.
@@ -996,29 +1326,21 @@ function SessionRow({
     onChange: (event) => { event.stopPropagation(); onToggleSelect?.(sessionId) },
   })) : null,
   h(StatusCell, { status, t }),
-  h('span', { className: 'dsm-title', title }, title),
-  // Search rows carry where the session lives and why it matched; list rows do not.
-  workspaceLabel === undefined ? null : h('span', { className: 'dsm-workspace' }, workspaceLabel),
-  snippet === undefined || snippet === '' ? null : h('span', { className: 'dsm-snippet', title: snippet }, snippet),
   // No "unread" chip: the native row says it with the done dot and a heavier
   // title, and a second badge beside the title only competes with the priority
   // pill for the same strip of width.
   // The badge marks a pinned session among unpinned ones. Inside the pinned
   // block every row is pinned, so it would only eat the title's width.
-  pinned && !archived && !pinnedSection
-    ? h('span', { className: 'dsm-pin', role: 'img', 'aria-label': t('mark.pinned'), title: t('mark.pinned') },
-      h(IconPinFillRegular, { size: 14 }))
-    : null,
   // The label sits opposite the status dot as text, so the two can never be
   // confused: a coloured round dot is always status, a digit pill is priority.
   // In the priority view the level is the section heading, so repeating it on
   // every row would only cost the title its width.
-  priority === undefined || groupedByPriority ? null : h('span', {
-    className: 'dsm-priority',
-    title: t(`priority.${priority}`),
-    'data-level': priority,
-  }, priority.toUpperCase()),
-  h(TimeCell, { status, updatedAt: summary?.updatedAt, now, t }),
+  ...(stacked
+    ? [h('span', { className: 'dsm-stack' },
+      h('span', { className: 'dsm-stack-main' }, titleNode, pinnedNode, priorityNode),
+      hasSub ? h('span', { className: 'dsm-stack-sub' }, snippetNode, workspaceNode) : null)]
+    : [titleNode, workspaceNode, snippetNode, pinnedNode, priorityNode]),
+  h(TimeCell, { status, updatedAt: summary?.updatedAt, t }),
   h(Menu, {
     open: menuOpen,
     anchor: h('button', {
@@ -1048,6 +1370,10 @@ function SessionRow({
   return row
 }
 
+// Rows are pure views over stable props: memoising them means a drop marker or a
+// status tick only re-renders the rows whose own props changed.
+const SessionRowCell = React.memo(SessionRow)
+
 /**
  * One collapsible block: the global pinned block, a workspace, or the ungrouped bucket.
  *
@@ -1061,7 +1387,9 @@ function SessionRow({
 function Section(props) {
   const {
     sectionKey, label, path, count, expanded, onToggle, sessions, renderRow,
-    onStart, onNewFolder, newFolderLabel, drag, drop, dragging, onDragStart, onDragOver, onDragEnd,
+    onStart, onNewFolder, newFolderLabel, onSelectMode, selectLabel, selectActive = false,
+    drop, dragging,
+    onDragStart, onDragOver, onDragEnd,
     pageLimit, pageRequired, pageExpanded, onShowMore, onCollapsePage, expandLabel, collapseLabel,
     folder, heading = false, body,
 
@@ -1125,14 +1453,27 @@ function Section(props) {
       title: newFolderLabel,
       'aria-label': newFolderLabel,
       onClick: (event) => { event.stopPropagation(); onNewFolder(sectionKey) },
-    }, h(IconFolderCloseRegular, { size: 14 })),
+    }, h(IconFolderCloseRegular, { size: 14 }), h(IconPlusOutlineRegular, { size: 8, className: 'dsm-folder-plus' })),
     onStart === undefined ? null : h('button', {
       type: 'button',
       className: 'dsm-workspace-action',
       title: props.startLabel,
       'aria-label': props.startLabel,
       onClick: (event) => { event.stopPropagation(); onStart(sectionKey) },
-    }, h(IconPlusOutlineRegular, { size: 14 }))),
+    }, h(IconPlusOutlineRegular, { size: 14 })),
+    onSelectMode === undefined ? null : h('button', {
+      type: 'button',
+      className: 'dsm-workspace-action dsm-workspace-select',
+      title: selectLabel,
+      'aria-label': selectLabel,
+      'aria-pressed': String(selectActive),
+      'data-active': selectActive ? 'true' : undefined,
+      // The same seat turns the mode off: a mode whose only exit is a bar that
+      // scrolls with the list is a trap.
+      onClick: (event) => { event.stopPropagation(); onSelectMode(sectionKey) },
+    }, selectActive
+      ? h(IconCloseFillRegular, { size: 12 })
+      : h(IconCheckCircleOutlineRegular, { size: 14 }))),
   expanded ? h('div', { className: body === undefined ? 'dsm-list' : 'dsm-folder-body' },
     body === undefined ? page.visible.map(renderRow) : body) : null,
   expanded && body === undefined && showPageControl ? h('button', {
@@ -1156,15 +1497,22 @@ function Section(props) {
  */
 function FolderSection(props) {
   const {
-    section, header = true, expanded, onToggle, menu, marked = false, renderRow,
+    section, header = true, expanded, onToggle, menu, marked = false, pending = false, renderRow, folderHover = false,
+    workspaceId, reorderHandlers, reorderHint,
     pageLimit, pageRequired, pageExpanded, onShowMore, onCollapsePage, expandLabel, collapseLabel, t,
   } = props
   const page = pageRows(section.sessions, pageLimit === undefined ? section.sessions.length : pageLimit, pageRequired ?? 0)
   const overflowing = page.hiddenCount > 0
   const showPage = expanded && (overflowing || pageExpanded === true)
-  const empty = section.sessions.length === 0
-  return h('div', { className: 'dsm-folder-group', 'data-dsm-folder': section.key },
-    header ? h('div', { className: 'dsm-folder-row' },
+  return h('div', {
+    className: 'dsm-folder-group',
+    'data-dsm-folder': section.key,
+    'data-dsm-folder-id': section.id,
+    'data-dsm-folder-ws': workspaceId,
+    'data-dsm-drop': folderHover ? 'true' : undefined,
+    'data-dsm-folder-side': reorderHint === null || reorderHint === undefined ? undefined : reorderHint,
+  },
+    header ? h('div', { className: 'dsm-folder-row', ...(reorderHandlers ?? {}) },
       h('button', {
         type: 'button',
         className: 'dsm-folder-header',
@@ -1174,15 +1522,19 @@ function FolderSection(props) {
       h('span', { className: 'dsm-chevron', 'aria-hidden': 'true' },
         expanded ? h(IconChevronDownOutlineRegular, { size: 10 }) : h(IconChevronRightOutlineRegular, { size: 10 })),
       h('span', { className: 'dsm-folder-label' }, section.kind === 'unfiled' ? t('folders.unfiled') : section.name),
-      marked ? h('span', { className: 'dsm-folder-mark', role: 'img', 'aria-label': t('folders.mark'), title: t('folders.mark') }) : null,
+      marked ? h('span', {
+        className: 'dsm-folder-mark',
+        role: 'img',
+        'data-tone': pending ? 'pending' : undefined,
+        'aria-label': t('folders.mark'),
+        title: t('folders.mark'),
+      }) : null,
       h('span', { className: 'dsm-folder-count' }, String(section.sessions.length)),
       ),
       menu ?? null,
     ) : null,
     expanded ? h('div', { className: 'dsm-list' },
       page.visible.map(renderRow),
-      empty ? h('div', { className: 'dsm-empty-folder' },
-        section.kind === 'folder' ? t('folders.empty') : t('folders.unfiledEmpty')) : null,
     ) : null,
     showPage ? h('button', {
       type: 'button',
@@ -1314,6 +1666,29 @@ function FolderDialog({ request, folders, reserved, onSubmit, onCancel, t }) {
 }
 
 /**
+ * The sidebar foot action that hands the region back, or takes it again.
+ *
+ * It lives in a different slot from the region on purpose: while the region is
+ * yielded its registration is disposed, so this is the only way back without a
+ * reload.
+ * @param {object} props - owner share, injected takeover store and copy.
+ * @returns {object} the toggle.
+ */
+function TakeoverFooterAction({ takeover, setTakeover, t }) {
+  const snapshot = useSyncExternalStore(takeover.subscribe, takeover.getSnapshot)
+  const active = readTakeover(snapshot) === 'on'
+  const label = active ? t('toggle.yield') : t('toggle.resume')
+  return h('button', {
+    type: 'button',
+    className: 'dsm-takeover',
+    title: label,
+    'aria-label': label,
+    'aria-pressed': String(active),
+    onClick: () => setTakeover(!active),
+  }, h(active ? IconPauseOutlineRegular : IconPlayOutlineRegular, { size: 16 }))
+}
+
+/**
  * The region occupant: the whole session-browsing surface.
  *
  * It is deliberately a single stable component: the slot renderer keeps one
@@ -1324,6 +1699,10 @@ function FolderDialog({ request, folders, reserved, onSubmit, onCancel, t }) {
  * @param {object} props - owner share, standard hooks, injected actions and copy.
  * @returns {object} the browsing region.
  */
+/* ------------------------------------------------------------------ *
+ * The region: state, derivations, and the rendered tree.
+ * ------------------------------------------------------------------ */
+
 function SessionManagerRegion(props) {
   const {
     wide, expandSidebar, useSessions, useWorkspaces, useSessionStatus, useJobs, t,
@@ -1331,6 +1710,7 @@ function SessionManagerRegion(props) {
     renameSession, forkSession, insertSessionBefore, insertWorkspaceBefore, copyText,
     pickDirectory, createWorkspace, searchSessions, searchResultLimit, useNotice, clearNotice,
     setPriority, setPriorities, priorityStore, folderStore, folderActions, watchRows,
+    autoArchiveStore, setAutoArchive, archiveMany, setTakeover, reportNotice,
   } = props
 
   const list = useSessions(snapshot => snapshot)
@@ -1343,14 +1723,14 @@ function SessionManagerRegion(props) {
   // Priority labels are the plugin's own state; the region subscribes to the
   // store React itself rather than asking the Host to synthesize another hook.
   const priorities = useSyncExternalStore(priorityStore.subscribe, priorityStore.getSnapshot)
+  const autoArchiveSnapshot = useSyncExternalStore(autoArchiveStore.subscribe, autoArchiveStore.getSnapshot)
+  const autoArchiveRead = useMemo(() => readAutoArchive(autoArchiveSnapshot), [autoArchiveSnapshot])
   const folderSnapshot = useSyncExternalStore(folderStore.subscribe, folderStore.getSnapshot)
   const folderRead = useMemo(() => readFolderState(folderSnapshot), [folderSnapshot])
   const folderReadonly = folderRead.mode === 'readonly'
   // Component-level failures are reported through the same notice channel the
   // injected actions use, so a rejected pick/create is never silent.
   const reportFailure = props.reportFailure ?? (() => {})
-  const now = useNow()
-
   const [orderBy, setOrderBy] = useState('manual')
   const [archivedFilter, setArchivedFilter] = useState('default')
   const [viewOpen, setViewOpen] = useState(false)
@@ -1366,10 +1746,21 @@ function SessionManagerRegion(props) {
   // The priority view lists marked sessions by level for bulk edits; the normal
   // pinned/project tree returns as soon as it is switched off.
   const [priorityView, setPriorityView] = useState(false)
+  // The attention view is a flat “what is waiting on me” list: waiting for
+  // input or finished-but-unread, most recently active first.
+  const [attentionOnly, setAttentionOnly] = useState(false)
+  // Bulk selection is scoped to one workspace: a transfer target is a folder
+  // of that workspace, so selecting across workspaces could not name one.
+  const [bulk, setBulk] = useState(null)
+  const [bulkMenuOpen, setBulkMenuOpen] = useState(false)
   const [selected, setSelected] = useState(() => new Set())
   const [levelCollapsed, setLevelCollapsed] = useState(() => ({}))
   const [collapsed, setCollapsed] = useState({})
   const [folderCollapsed, setFolderCollapsed] = useState({})
+  // The folder currently under a dragged row, painted as a drop target.
+  const [folderDrop, setFolderDrop] = useState(null)
+  // The folder a drag would reorder against (painted as a before/after rule).
+  const [folderHint, setFolderHint] = useState(null)
   const [folderDialog, setFolderDialog] = useState(null)
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false)
   const [drag, setDrag] = useState(null)
@@ -1389,6 +1780,19 @@ function SessionManagerRegion(props) {
   }, [byId])
 
   const { children, rollup } = useMemo(() => buildRollup(list, jobsState), [list, jobsState])
+
+  // One status object per session per (rollup, statuses) generation. Rows are
+  // memoised and the region reads status in several derivations, so the identity
+  // has to be stable across renders that changed neither input.
+  const statusCache = useMemo(() => {
+    const cache = new Map()
+    for (const id of list?.ids || []) cache.set(id, statusOf(id, { rollup, statusSnapshot: statuses }))
+    return cache
+  }, [list, rollup, statuses])
+  const statusOfId = useCallback(
+    (id) => statusCache.get(id) ?? statusOf(id, { rollup, statusSnapshot: statuses }),
+    [rollup, statusCache, statuses],
+  )
 
   const workspaces = workspaceState?.items || []
   const expandedKeys = useMemo(
@@ -1492,12 +1896,22 @@ function SessionManagerRegion(props) {
     await createWorkspace({ path })
   }, [createWorkspace, pickDirectory])
 
+  // Content search is a deployment capability, not a per-keystroke gamble: the
+  // base bundle mounts the index with `openAt: 'never'`, where every call
+  // rejects. Once that rejection is seen the region stops asking and keeps
+  // matching titles and workspace names locally, so no error paints over them.
+  const [contentSearchOff, setContentSearchOff] = useState(false)
+
   // One superseded request per keystroke: the previous controller is aborted
   // before the next timer fires, and a blank query never reaches the host.
   useEffect(() => {
     const clean = sanitizeQuery(query)
     if (clean.trim() === '') {
       setSearch({ phase: 'idle', items: [], hasMore: false })
+      return undefined
+    }
+    if (contentSearchOff) {
+      setSearch({ phase: 'local', items: [], hasMore: false })
       return undefined
     }
     const controller = new AbortController()
@@ -1507,11 +1921,16 @@ function SessionManagerRegion(props) {
         .then(result => setSearch({ phase: 'ready', items: result?.items ?? [], hasMore: result?.hasMore === true }))
         .catch(error => {
           if (controller.signal.aborted) return
+          if (contentSearchDisabled(error)) {
+            setContentSearchOff(true)
+            setSearch({ phase: 'local', items: [], hasMore: false })
+            return
+          }
           setSearch({ phase: 'error', items: [], hasMore: false, message: String(error?.message ?? error) })
         })
     }, SEARCH_DEBOUNCE_MS)
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [query, searchSessions])
+  }, [contentSearchOff, query, searchSessions])
 
   // The box being open and a query being active are different states: open with
   // an empty box still shows the list, and only a non-blank query searches.
@@ -1533,14 +1952,98 @@ function SessionManagerRegion(props) {
     const busy = new Set()
     for (const group of tree.groups) {
       for (const id of group.sessions) {
-        if (statusOf(id, { rollup, statusSnapshot: statuses }).dot !== DOT.IDLE) busy.add(id)
+        if (statusOfId(id).dot !== DOT.IDLE) busy.add(id)
       }
     }
     for (const id of tree.pinned) {
-      if (statusOf(id, { rollup, statusSnapshot: statuses }).dot !== DOT.IDLE) busy.add(id)
+      if (statusOfId(id).dot !== DOT.IDLE) busy.add(id)
     }
     return busy
   }, [tree, rollup, statuses])
+
+  // “Needs you” is the two states a person has to act on. Running work has a
+  // dot of its own but is not a request for the operator, so it stays out.
+  const needsAttention = useMemo(() => {
+    const ids = []
+    for (const id of [...tree.pinned, ...tree.groups.flatMap(group => group.sessions)]) {
+      const dot = statusOfId(id).dot
+      if (dot === DOT.PENDING || dot === DOT.UNREAD) ids.push(id)
+    }
+    return orderByRecency([...new Set(ids)], list.byId)
+  }, [tree, rollup, statuses, list.byId])
+
+  const workspaceLabelBySession = useMemo(() => workspaceLabels(workspaces), [workspaces])
+
+  // Running work is never a sweep candidate; every other dot is fair game once
+  // the idle window has passed.
+  const runningSessions = useMemo(() => {
+    const running = new Set()
+    for (const id of list?.ids || []) {
+      if (statusOfId(id).dot === DOT.RUNNING) running.add(id)
+    }
+    return running
+  }, [list, rollup, statuses])
+
+  const autoLabel = (days) => {
+    const count = autoArchiveCounts[days] ?? 0
+    return count > 0
+      ? t('view.autoArchiveDaysCount', { n: days, count })
+      : t('view.autoArchiveDays', { n: days })
+  }
+  // The menu says what a policy would do before it does it: an auto-archive
+  // that quietly removes rows is the one destructive-feeling action here.
+  const autoArchiveCounts = useMemo(() => {
+    const counts = {}
+    for (const days of [7, 30, 90]) {
+      counts[days] = autoArchiveCandidates({
+        list,
+        archivedSessionIds: workspaceState?.archivedSessionIds || [],
+        pinnedSessionIds: workspaceState?.pinnedSessionIds || [],
+        currentId,
+        busy: runningSessions,
+        days,
+        now: Date.now(),
+      }).length
+    }
+    return counts
+  }, [list, workspaceState, currentId, runningSessions])
+
+  // The sweep reads live state through a ref: a policy change must not fire once
+  // per list update, and a sweep must never act on a stale snapshot.
+  // The injected actions object is rebuilt by the registration whenever it
+  // re-renders, so the sweep keeps the latest one in a ref: only a policy
+  // change should arm or disarm the timer.
+  const archiveManyRef = useRef(archiveMany)
+  archiveManyRef.current = archiveMany
+  const sweepState = useRef({})
+  sweepState.current = {
+    list,
+    archivedSessionIds: workspaceState?.archivedSessionIds || [],
+    pinnedSessionIds: workspaceState?.pinnedSessionIds || [],
+    currentId,
+    busy: runningSessions,
+  }
+  useEffect(() => {
+    if (autoArchiveRead.days === null) return undefined
+    let cancelled = false
+    const tick = () => {
+      const current = sweepState.current
+      const ids = autoArchiveCandidates({ ...current, days: autoArchiveRead.days, now: Date.now() })
+      if (ids.length === 0) return
+      Promise.resolve(archiveManyRef.current(ids)).then((result) => {
+        if (cancelled || !result) return
+        if (result.archived > 0) {
+          reportNotice?.(t('notice.autoArchived', { n: result.archived }))
+        }
+        if (result.failed > 0) {
+          reportFailure(new Error(t('notice.archiveBulkFailed', { n: result.failed })))
+        }
+      }).catch(reportFailure)
+    }
+    tick()
+    const timer = window.setInterval(tick, 15 * 60 * 1000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [autoArchiveRead.days])
 
   // Per-folder paging. The same derivation the workspace block uses, keyed by
   // the folder section key so a folder's page never collides with a workspace's.
@@ -1656,6 +2159,121 @@ function SessionManagerRegion(props) {
   }, [archiveSession, byId, copyText, folderActions, folderEntries, folderReadonly, forkSession, move,
     pinSession, setPriority, unpinSession, unarchiveSession, workspaceMembers, workspaceOf, workspaceReady])
 
+  const startBulk = useCallback((workspaceId) => {
+    setPriorityView(false)
+    setSelected(new Set())
+    setBulk({ workspaceId, selected: new Set() })
+  }, [])
+
+  const toggleBulk = useCallback((sessionId) => {
+    setBulk((current) => {
+      if (current === null) return current
+      const selected = new Set(current.selected)
+      if (selected.has(sessionId)) selected.delete(sessionId)
+      else selected.add(sessionId)
+      return { ...current, selected }
+    })
+  }, [])
+
+  const leaveBulk = useCallback(() => setBulk(null), [])
+
+  // Filing a selection is one workspace write, then the mode stays open with an
+  // empty selection so several passes are cheap.
+  const moveBulkTo = useCallback((folderId) => {
+    if (bulk === null || bulk.selected.size === 0) return
+    const ids = [...bulk.selected]
+    const workspaceId = bulk.workspaceId
+    folderActions.assignMany(workspaceId, ids, folderId === FOLDER_UNFILED ? null : folderId, {
+      ready: workspaceReady,
+      memberIds: workspaceMembers.get(workspaceId),
+    })
+    const name = folderId === FOLDER_UNFILED
+      ? t('folders.unfiled')
+      : folderEntries.get(workspaceId)?.folders.find(folder => folder.id === folderId)?.name
+    if (name) reportNotice?.(t('notice.filedMany', { n: ids.length, name }))
+    setBulk({ workspaceId, selected: new Set() })
+  }, [bulk, folderActions, folderEntries, reportNotice, t, workspaceMembers, workspaceReady])
+
+  const selectAllInBulk = useCallback(() => {
+    if (bulk === null) return
+    const group = tree.groups.find(candidate => candidate.workspaceId === bulk.workspaceId)
+    setBulk({ workspaceId: bulk.workspaceId, selected: new Set(group?.sessions ?? []) })
+  }, [bulk, tree])
+
+  // Per-row callbacks are stable: a memoised row must not re-render because its
+  // parent produced a new closure for the same behaviour.
+  const handleDragOverRow = useCallback((next) => setDropTarget((current) => {
+    if (next === null || next === undefined) return current === null ? current : null
+    return current && current.sessionId === next.sessionId && current.half === next.half ? current : next
+  }), [])
+
+  // A multi-selection cannot be expressed as a single-row insertion: it paints
+  // no line and clears the marker state a row drag would otherwise keep.
+  const handleDragOverMulti = useCallback(() => {
+    pointerGesture.targetId = null
+    pointerGesture.half = null
+    setDropTarget(null)
+  }, [])
+
+  const handleDragEnd = useCallback((move) => {
+    if (move !== null && move !== undefined) drop(move.accountId, move.order, move.id, move.target)
+    setDrag(null)
+    setDropTarget(null)
+    setFolderDrop(null)
+  }, [drop])
+
+  const handleFolderOver = useCallback((folderId) => setFolderDrop(folderId), [])
+  const handleToggleSelect = useCallback((sessionId) => toggleBulk(sessionId), [toggleBulk])
+
+  // Bulk state is read at drop time from a ref: one stable callback serves every
+  // row without freezing the selection it was created under.
+  const bulkRef = useRef(bulk)
+  bulkRef.current = bulk
+  const filingRef = useRef(null)
+  filingRef.current = { folderActions, folderEntries, workspaceMembers, workspaceReady, t, reportNotice }
+  const handleAssignFolder = useCallback((folderId) => {
+    const sessionId = pointerGesture.id
+    const workspaceId = pointerGesture.accountId
+    if (!sessionId || !workspaceId) return
+    const current = filingRef.current
+    const bulkNow = bulkRef.current
+    const selected = bulkNow !== null && bulkNow.workspaceId === workspaceId ? [...bulkNow.selected] : []
+    const multi = selected.includes(sessionId) && selected.length > 1
+    const target = folderId === FOLDER_UNFILED ? null : folderId
+    const options = { ready: current.workspaceReady, memberIds: current.workspaceMembers.get(workspaceId) }
+    if (multi) {
+      current.folderActions.assignMany(workspaceId, selected, target, options)
+      setBulk({ workspaceId, selected: new Set() })
+    } else {
+      current.folderActions.assign(workspaceId, sessionId, target, options)
+    }
+    const name = folderId === FOLDER_UNFILED
+      ? current.t('folders.unfiled')
+      : current.folderEntries.get(workspaceId)?.folders.find(folder => folder.id === folderId)?.name
+    if (name) {
+      current.reportNotice?.(multi
+        ? current.t('notice.filedMany', { n: selected.length, name })
+        : current.t('notice.filed', { name }))
+    }
+  }, [])
+
+  // Folder options are per workspace+session; caching them keeps the per-row
+  // object identity stable while folders and assignments are unchanged.
+  const folderOptionsCache = useMemo(() => {
+    const cache = new Map()
+    for (const [workspaceId, entry] of folderEntries) {
+      for (const sessionId of workspaceMembers.get(workspaceId) || []) {
+        cache.set(`${workspaceId}:${sessionId}`, {
+          current: entry.assign[sessionId] ?? null,
+          folders: entry.folders,
+          readonly: folderReadonly,
+          canCreate: !folderReadonly && entry.folders.length < FOLDER_MAX_PER_WORKSPACE,
+        })
+      }
+    }
+    return cache
+  }, [folderEntries, folderReadonly, workspaceMembers])
+
   const renderRow = useCallback((sessionId, accountId, accountOrder, layout = {}) => {
     const {
       flat = false, pinnedSection = false,
@@ -1665,43 +2283,38 @@ function SessionManagerRegion(props) {
     const summary = byId[sessionId]
     if (!summary) return null
     const workspaceId = workspaceOf.get(sessionId)
-    const folderEntry = workspaceId === undefined ? undefined : folderEntries.get(workspaceId)
-    const folderOptions = workspaceId === undefined || folderEntry === undefined ? undefined : {
-      current: folderEntry.assign[sessionId] ?? null,
-      folders: folderEntry.folders,
-      readonly: folderReadonly,
-      canCreate: !folderReadonly && folderEntry.folders.length < FOLDER_MAX_PER_WORKSPACE,
-    }
+    const folderOptions = workspaceId === undefined
+      ? undefined
+      : folderOptionsCache.get(`${workspaceId}:${sessionId}`)
     const scope = typeof accountId === 'string' && accountId !== ''
       ? `${accountId}:${folderScope ?? ''}`
       : undefined
-    return h(SessionRow, {
+    // A bulk selection never leaves its workspace: rows elsewhere are not
+    // selectable, so a transfer can only ever name one folder.
+    const bulkActive = bulk !== null && typeof accountId === 'string' && bulk.workspaceId === accountId
+    // Dragging one selected row drags the whole selection: an insertion between
+    // single rows cannot express that, so only folder targets are honoured.
+    const bulkMulti = bulkActive && bulk.selected.has(sessionId) && bulk.selected.size > 1
+    return h(SessionRowCell, {
       key: sessionId,
       sessionId,
       summary,
-      status: statusOf(sessionId, { rollup, statusSnapshot: statuses }),
+      status: statusCache.get(sessionId) ?? statusOfId(sessionId),
       accountId,
       accountOrder,
       currentId,
       archived: archivedSet.has(sessionId),
       pinned: pinnedSet.has(sessionId),
-      now,
       t,
-      drag,
-      dropTarget,
+      dragging: drag?.sessionId === sessionId,
+      dropHalf: dropTarget?.sessionId === sessionId ? dropTarget.half : null,
+      bulkMulti,
       onDragStart: setDrag,
       // `dragover` fires continuously: only a *changed* cell may re-render.
       // A pointer stream is continuous: only a *changed* cell may re-render.
-      onDragOverRow: (next) => setDropTarget((current) => {
-        if (next === null || next === undefined) return current === null ? current : null
-        return current && current.sessionId === next.sessionId && current.half === next.half ? current : next
-      }),
-      onDragEnd: (move) => {
-        // Commit from the last marked row: a gesture that ends in a gap, at an
-        // edge, or outside the list still lands where its marker pointed.
-        if (move !== null && move !== undefined) drop(move.accountId, move.order, move.id, move.target)
-        setDrag(null); setDropTarget(null)
-      },
+      // A multi-drag paints no insertion line at all: the drop is a folder.
+      onDragOverRow: bulkMulti ? handleDragOverMulti : handleDragOverRow,
+      onDragEnd: handleDragEnd,
       onOpen: open,
       onSelectAction: selectAction,
       onMove: move,
@@ -1711,19 +2324,22 @@ function SessionManagerRegion(props) {
       priority: priorityLevel(priorities?.[sessionId]),
       flat,
       pinnedSection,
-      selectable,
-      selected,
-      onToggleSelect,
-      toggleLabel,
+      selectable: bulkActive ? true : selectable,
+      selected: bulkActive ? bulk.selected.has(sessionId) : selected,
+      onToggleSelect: bulkActive ? handleToggleSelect : onToggleSelect,
+      toggleLabel: bulkActive ? t('bulk.selectMode') : toggleLabel,
       groupedByPriority,
       folderOptions,
       scope,
+      onFolderOver: folderOptions === undefined ? undefined : handleFolderOver,
+      onAssignFolder: folderOptions === undefined ? undefined : handleAssignFolder,
     })
   // `priorities` belongs here: without it the memoised renderer kept writing the
   // labels it saw when it was created, so a new P1–P4 choice only showed up after
   // something else rebuilt the rows.
-  }, [archivedSet, byId, currentId, drag, drop, dropTarget, folderEntries, folderReadonly, move, now,
-    open, pinnedSet, priorities, rollup, selectAction, statuses, t, workspaceOf])
+  }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder,
+    handleDragEnd, handleDragOverMulti, handleDragOverRow, handleFolderOver, handleToggleSelect, move, open,
+    pinnedSet, priorities, selectAction, statusCache, statusOfId, t, workspaceOf])
 
   // Priority view: the same rows, grouped by the label they carry. Order inside a
   // level follows the active ordering, so switching order still reads naturally.
@@ -1826,6 +2442,33 @@ function SessionManagerRegion(props) {
   // The body of a workspace that has folders: one collapsible section per
   // folder, then Unfiled when it still has rows. There is no chip row; the
   // section headers are the tree, so a folder name appears once.
+  const folderReorderHandlers = (workspaceId) => ({
+    onPointerDown: (event) => {
+      // The header's own menu and toggle are controls, not drag handles.
+      if (event.target?.closest?.('button, a, input, [role="menu"], [role="menuitem"]')) return
+      const folderId = event.currentTarget?.closest?.('[data-dsm-folder-id]')?.getAttribute?.('data-dsm-folder-id')
+      if (!folderId) return
+      gestureDown('folder', folderId, event, { workspaceId, scope: `folders:${workspaceId}` })
+    },
+    onPointerMove: (event) => {
+      if (pointerGesture.kind !== 'folder') return
+      gestureMove('folder', event, 'data-dsm-folder-id', (mark) => {
+        const hit = mark === null ? null : elementUnder(event, 'data-dsm-folder-id')
+        const sameWorkspace = hit?.getAttribute?.('data-dsm-folder-ws') === workspaceId
+        setFolderHint(mark === null || !sameWorkspace ? null : { id: mark.id, half: mark.half })
+      })
+    },
+    onPointerUp: () => {
+      const hint = folderHint
+      setFolderHint(null)
+      gestureUp('folder', (move) => {
+        if (move === null || move === undefined || hint === null) return
+        folderActions.reorder(workspaceId, move.id, hint.id, hint.half === 'after' ? 'after' : 'before')
+      })
+    },
+    onPointerCancel: () => { setFolderHint(null); gestureUp('folder', () => {}) },
+  })
+
   const renderFolderBody = (group, view) => {
     const folders = view.sections.filter(section => section.kind === 'folder')
     return view.sections
@@ -1836,6 +2479,11 @@ function SessionManagerRegion(props) {
         expanded: folderCollapsed[section.key] !== true,
         onToggle: key => setFolderCollapsed(state => ({ ...state, [key]: state[key] !== true })),
         marked: section.sessions.some(id => id === currentId || attention.has(id)),
+        pending: section.sessions.some(id => statusOfId(id).pending !== undefined),
+        folderHover: folderDrop === section.id,
+        workspaceId: group.workspaceId,
+        reorderHandlers: folderReorderHandlers(group.workspaceId),
+        reorderHint: folderHint?.id === section.id ? folderHint.half : null,
         menu: section.kind === 'folder' ? h(FolderMenu, {
           key: `menu:${section.key}`,
           index: folders.findIndex(folder => folder.id === section.id),
@@ -1891,6 +2539,11 @@ function SessionManagerRegion(props) {
       collapseLabel: t('sessions.collapse'),
       // Only a registered workspace can host a new session or be reordered.
       onStart: group.workspaceId === undefined ? undefined : () => startSession(group.workspaceId),
+      onSelectMode: group.workspaceId === undefined ? undefined : () => (
+        bulk !== null && bulk.workspaceId === group.workspaceId ? leaveBulk() : startBulk(group.workspaceId)
+      ),
+      selectLabel: bulk !== null && bulk.workspaceId === group.workspaceId ? t('bulk.exit') : t('bulk.selectModeFull'),
+      selectActive: bulk !== null && bulk.workspaceId === group.workspaceId,
       drag: groupDrag,
       drop: groupDrop && groupDrop.key === group.key ? groupDrop.half : null,
       dragging: groupDrag === group.key,
@@ -1918,8 +2571,16 @@ function SessionManagerRegion(props) {
     // The rail: the shell owns the icon column; the region only needs an entry
     // that expands the sidebar back to its wide form.
     return h('div', { className: 'dsm-region' },
-      h('button', { type: 'button', className: 'dsm-section-header', onClick: expandSidebar, 'aria-label': t('section.workspaces') }, '▸'))
+      h('button', { type: 'button', className: 'dsm-section-header', onClick: expandSidebar, 'aria-label': t('section.workspaces') }, h(IconChevronRightOutlineRegular, { size: 12 })))
   }
+
+  const viewKey = searching ? 'search' : attentionOnly ? 'attention' : priorityView ? 'priority' : 'tree'
+  const bodyRef = useRef(null)
+  useEffect(() => {
+    const host = bodyRef.current
+    if (!host) return
+    host.scrollTop = scrollMemory.get(viewKey) ?? 0
+  }, [viewKey])
 
   const region = h('div', { className: 'dsm-region' },
     h('div', { className: 'dsm-head' },
@@ -1942,6 +2603,16 @@ function SessionManagerRegion(props) {
           }))
         : h('span', { className: 'dsm-head-label' }, t('section.workspaces')),
       h('span', { className: 'dsm-head-spacer' }),
+      needsAttention.length === 0 && !attentionOnly ? null : h('button', {
+        type: 'button',
+        className: 'dsm-head-action',
+        'data-active': attentionOnly ? 'true' : undefined,
+        title: attentionOnly ? t('attention.exit') : t('attention.show', { n: needsAttention.length }),
+        'aria-label': attentionOnly ? t('attention.exit') : t('attention.show', { n: needsAttention.length }),
+        'aria-pressed': String(attentionOnly),
+        onClick: () => setAttentionOnly(value => !value),
+      }, h(IconQueueOutlineRegular, { size: 16 }),
+      h('span', { className: 'dsm-attn-badge', 'aria-hidden': 'true' }, String(needsAttention.length))),
       searchOpen ? null : h('button', {
         type: 'button',
         className: 'dsm-head-action',
@@ -1986,11 +2657,22 @@ function SessionManagerRegion(props) {
           { id: 'archivedDefault', label: t('view.archivedDefault'), icon: h(IconArchiveOffOutlineRegular) },
           { id: 'archivedShow', label: t('view.archivedShow'), icon: h(IconQueueOutlineRegular) },
           { id: 'archivedOnly', label: t('view.archivedOnly'), icon: h(IconArchiveCheckOutlineRegular) },
+          { type: 'separator', id: 'sep-auto' },
+          { type: 'label', id: 'auto-label', text: t('view.autoArchive') },
+          { id: 'autoOff', label: t('view.autoArchiveOff') },
+          { id: 'auto7', label: autoLabel(7) },
+          { id: 'auto30', label: autoLabel(30) },
+          { id: 'auto90', label: autoLabel(90) },
+          { type: 'separator', id: 'sep-yield' },
+          { id: 'yieldTakeover', label: t('view.yield') },
         ],
         selectedIds: [
           orderBy === 'manual' ? 'orderManual' : 'orderUpdated',
           archivedFilter === 'show' ? 'archivedShow'
             : archivedFilter === 'only' ? 'archivedOnly' : 'archivedDefault',
+          autoArchiveRead.days === 7 ? 'auto7'
+            : autoArchiveRead.days === 30 ? 'auto30'
+              : autoArchiveRead.days === 90 ? 'auto90' : 'autoOff',
         ],
         onSelect: (id) => {
           if (id === 'orderManual') setOrderBy('manual')
@@ -1998,6 +2680,11 @@ function SessionManagerRegion(props) {
           else if (id === 'archivedDefault') setArchivedFilter('default')
           else if (id === 'archivedShow') setArchivedFilter('show')
           else if (id === 'archivedOnly') setArchivedFilter('only')
+          else if (id === 'autoOff') setAutoArchive(null)
+          else if (id === 'auto7') setAutoArchive(7)
+          else if (id === 'auto30') setAutoArchive(30)
+          else if (id === 'auto90') setAutoArchive(90)
+          else if (id === 'yieldTakeover') setTakeover(false)
           setViewOpen(false)
         },
         onClose: () => setViewOpen(false),
@@ -2014,6 +2701,44 @@ function SessionManagerRegion(props) {
         onClick: () => { addWorkspace().catch(reportFailure) },
       }, h(IconProjectAddOutlineRegular, { size: 16 })),
     ),
+    bulk !== null && !searching && !priorityView ? h('div', { className: 'dsm-bulk' },
+      h('span', { className: 'dsm-bulk-count' }, t('bulk.count', { n: bulk.selected.size })),
+      h('span', { className: 'dsm-bulk-actions' },
+        h(Menu, {
+          open: bulkMenuOpen,
+          anchor: h('button', {
+            type: 'button',
+            className: 'dsm-bulk-action',
+            disabled: bulk.selected.size === 0 || folderEntries.get(bulk.workspaceId) === undefined,
+            'aria-haspopup': 'menu',
+            onClick: () => setBulkMenuOpen(value => !value),
+          }, t('bulk.moveTo')),
+          items: [
+            { id: 'none', label: t('folders.unfiled') },
+            ...(folderEntries.get(bulk.workspaceId)?.folders ?? []).map(folder => ({ id: folder.id, label: folder.name })),
+          ],
+          onSelect: (id) => {
+            setBulkMenuOpen(false)
+            moveBulkTo(id === 'none' ? FOLDER_UNFILED : id)
+          },
+          onClose: () => setBulkMenuOpen(false),
+          align: 'end',
+          dense: true,
+          portal: true,
+        }),
+        h('button', {
+          type: 'button',
+          className: 'dsm-bulk-action',
+          onClick: selectAllInBulk,
+        }, t('bulk.all')),
+        h('button', {
+          type: 'button',
+          className: 'dsm-bulk-action dsm-bulk-done',
+          onClick: leaveBulk,
+        }, t('bulk.exit')),
+      ),
+      h('span', { className: 'dsm-bulk-hint' }, t('bulk.scope')),
+    ) : null,
     priorityView && !searching ? h('div', { className: 'dsm-bulk' },
       h('span', { className: 'dsm-bulk-count' }, t('bulk.selected', { n: selected.size })),
       h('span', { className: 'dsm-bulk-actions' },
@@ -2031,6 +2756,7 @@ function SessionManagerRegion(props) {
           disabled: selected.size === 0,
           onClick: () => setPriorities([...selected], 'none'),
         }, t('priority.none')),
+        h('span', { className: 'dsm-bulk-sep', 'aria-hidden': 'true' }),
         h('button', {
           type: 'button',
           className: 'dsm-bulk-action',
@@ -2043,6 +2769,21 @@ function SessionManagerRegion(props) {
           disabled: selected.size === 0,
           onClick: () => setSelected(new Set()),
         }, t('bulk.none')),
+        h('span', { className: 'dsm-bulk-sep', 'aria-hidden': 'true' }),
+        // Archiving is a clear-out action: it sits at the tail, styled secondary,
+        // never between the level buttons it has nothing to do with.
+        h('button', {
+          type: 'button',
+          className: 'dsm-bulk-action dsm-bulk-secondary',
+          disabled: selected.size === 0,
+          onClick: () => {
+            const ids = [...selected]
+            setSelected(new Set())
+            Promise.resolve(archiveMany(ids)).then((result) => {
+              if (result?.failed > 0) reportFailure(new Error(t('notice.archiveBulkFailed', { n: result.failed })))
+            }).catch(reportFailure)
+          },
+        }, t('bulk.archive')),
         h('button', {
           type: 'button',
           className: 'dsm-bulk-action dsm-bulk-done',
@@ -2051,10 +2792,16 @@ function SessionManagerRegion(props) {
       ),
       h('span', { className: 'dsm-bulk-hint' }, t('bulk.hint')),
     ) : null,
-    h('div', { className: 'dsm-body' },
+    h('div', {
+      className: 'dsm-body',
+      'data-filter': archivedFilter,
+      ref: bodyRef,
+      onScroll: (event) => { scrollMemory.set(viewKey, event.currentTarget.scrollTop) },
+    },
       searching ? h('div', { className: 'dsm-list' },
         search.phase === 'error' ? h('div', { className: 'dsm-search-meta' }, `${t('search.failed')}${search.message ?? ''}`) : null,
-        search.phase === 'loading' ? h('div', { className: 'dsm-search-meta' }, t('search.placeholder')) : null,
+        search.phase === 'local' ? h('div', { className: 'dsm-search-meta' }, t('search.local')) : null,
+        search.phase === 'loading' ? h('div', { className: 'dsm-search-meta' }, t('search.loading')) : null,
         results.nodes.length === 0 && search.phase !== 'loading'
           ? h('div', { className: 'dsm-empty' }, t('search.none'))
           : null,
@@ -2064,13 +2811,12 @@ function SessionManagerRegion(props) {
             key: node.id,
             sessionId: node.id,
             summary,
-            status: statusOf(node.id, { rollup, statusSnapshot: statuses }),
+            status: statusOfId(node.id),
             accountId: undefined,
             accountOrder: [],
             currentId,
             archived: archivedSet.has(node.id),
             pinned: pinnedSet.has(node.id),
-            now,
             t,
             drag: null,
             dropTarget: null,
@@ -2081,7 +2827,9 @@ function SessionManagerRegion(props) {
             onSelectAction: selectAction,
             onMove: () => {},
             workspaceLabel: node.workspace,
+            stacked: true,
             snippet: node.snippet,
+            titleMatch: node.titleMatch,
             canReorder: false,
             flat: true,
           })
@@ -2089,7 +2837,35 @@ function SessionManagerRegion(props) {
         results.hasMore ? h('div', { className: 'dsm-search-meta' }, t('search.more')) : null,
       ) : null,
       // --- priority view: one fold per level, then the unmarked rows ----------
-      searching ? null : priorityView ? h('div', { className: 'dsm-levels' },
+      searching ? null : attentionOnly ? h('div', { className: 'dsm-list' },
+        needsAttention.length === 0 ? h('div', { className: 'dsm-empty' }, t('attention.none')) : null,
+        needsAttention.map((sessionId) => {
+          const summary = byId[sessionId] ?? { displayTitle: sessionId, updatedAt: 0 }
+          return h(SessionRow, {
+            key: sessionId,
+            sessionId,
+            summary,
+            status: statusOfId(sessionId),
+            accountId: undefined,
+            accountOrder: [],
+            currentId,
+            archived: archivedSet.has(sessionId),
+            pinned: pinnedSet.has(sessionId),
+            t,
+            drag: null,
+            dropTarget: null,
+            onDragStart: () => {},
+            onDragOverRow: () => {},
+            onDragEnd: () => {},
+            onOpen: open,
+            onSelectAction: selectAction,
+            onMove: () => {},
+            workspaceLabel: workspaceLabelBySession.get(sessionId),
+            canReorder: false,
+            flat: true,
+          })
+        }),
+      ) : priorityView ? h('div', { className: 'dsm-levels' },
         markedCount === 0 && priorityLevels.unmarked.length === 0
           ? h('div', { className: 'dsm-empty' }, t('priority.empty'))
           : null,
@@ -2099,7 +2875,7 @@ function SessionManagerRegion(props) {
           label: bucket.label,
           count: bucket.ids.length,
           expanded: levelCollapsed[bucket.level] !== true,
-          onToggle: key => setLevelCollapsed(state => ({ ...state, [bucket.level]: state[bucket.level] !== true })),
+          onToggle: () => setLevelCollapsed(state => ({ ...state, [bucket.level]: state[bucket.level] !== true })),
           sessions: bucket.ids,
           renderRow: sessionId => priorityRow(sessionId, {
             selectable: true,
@@ -2148,7 +2924,7 @@ function SessionManagerRegion(props) {
         folder: false,
         heading: true,
       }) : null,
-      searching || priorityView ? null : tree.groups.length === 0
+      searching || priorityView ? null : workspaceReady ? (tree.groups.length === 0
         ? h('div', { className: 'dsm-empty' },
           h('div', null, t('empty.none')),
           h('button', {
@@ -2156,7 +2932,9 @@ function SessionManagerRegion(props) {
             className: 'dsm-empty-action',
             onClick: () => { addWorkspace().catch(reportFailure) },
           }, t('action.addWorkspace')))
-        : null,
+        : null)
+        // Before the Host list is ready, an empty tree is not an empty state.
+        : h('div', { className: 'dsm-empty' }, t('sessions.loading')),
       // The project block is one fold around every workspace group, so the two
       // sections read the same way and each keeps its header on screen while it
       // scrolls (Codex's session list does the same).
@@ -2178,7 +2956,7 @@ function SessionManagerRegion(props) {
         projectsCollapsed ? null : tree.groups.map(renderGroup),
       ),
     ),
-    notice ? h('div', { className: 'dsm-notice', role: 'alert' }, notice,
+    notice ? h('div', { className: 'dsm-notice', role: 'alert', 'data-tone': notice.tone ?? 'info' }, notice.text ?? notice,
       h('button', { type: 'button', onClick: clearNotice }, t('dialog.close'))) : null,
     h(FolderDialog, {
       request: folderDialog,
@@ -2207,16 +2985,30 @@ function SessionManagerRegion(props) {
  * @param {object} props - `{ request, onSubmit, onCancel, t }`.
  * @returns {object|null} the modal while a rename is pending.
  */
+/* ------------------------------------------------------------------ *
+ * Dialogs — rename and folder management.
+ * ------------------------------------------------------------------ */
+
 function RenameDialog({ request, onSubmit, onCancel, t }) {
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
-  useEffect(() => { setValue(request ? request.title : '') ; setBusy(false) }, [request])
+  const [error, setError] = useState(null)
+  useEffect(() => { setValue(request ? request.title : ''); setBusy(false); setError(null) }, [request])
   if (!request) return null
   const submit = async () => {
     const title = value.trim()
     if (title === '' || busy) return
     setBusy(true)
-    try { await onSubmit(request.sessionId, title) } finally { setBusy(false) }
+    setError(null)
+    try {
+      await onSubmit(request.sessionId, title)
+    } catch (reason) {
+      // A rejected rename used to leave the dialog looking inert: the host's
+      // reason now lands on the form, which is the only place it can be read.
+      setError(String(reason?.message ?? reason))
+    } finally {
+      setBusy(false)
+    }
   }
   return h(Modal, {
     open: true,
@@ -2235,6 +3027,14 @@ function RenameDialog({ request, onSubmit, onCancel, t }) {
       required: true,
       onChange: event => setValue(event.target.value),
     })),
+  error === null ? null : (() => {
+    const failure = explainRenameFailure(error)
+    const text = failure.kind === 'preset'
+      ? t('rename.presetGone', { preset: failure.preset })
+      : failure.kind === 'resume' ? t('rename.resumeFailed') : error
+    return h('div', { className: 'dsm-dialog-error', role: 'alert' }, text,
+      failure.kind === 'other' ? null : h('div', { className: 'dsm-dialog-detail' }, error))
+  })(),
   h('div', { className: 'dsm-dialog-actions' },
     h('button', { type: 'button', onClick: onCancel }, t('dialog.cancel')),
     h('button', { type: 'submit', disabled: busy }, t('dialog.save'))),
@@ -2242,6 +3042,10 @@ function RenameDialog({ request, onSubmit, onCancel, t }) {
 }
 
 /** Required client services; `jobs` is fetched lazily because a build may omit it. */
+/* ------------------------------------------------------------------ *
+ * Host half: registration, stores, and host-service actions.
+ * ------------------------------------------------------------------ */
+
 const inject = ['slots', 'sessions', 'workspaces', 'uiWorkspace', 'locale']
 
 /**
@@ -2294,6 +3098,11 @@ function apply(ctx) {
 
   const priorities = priorityStore(require)
   const folders = folderStore(require)
+  const autoArchive = autoArchiveStore(require)
+  const takeover = takeoverStore(require)
+  // The host half has no injected `t`: bind the namespace once so failure
+  // notices follow the active language instead of always speaking Chinese.
+  const hostT = ctx.locale.bind(NS)
 
   // Folder writes live on the injection face, next to the priority writes:
   // every action reads the store's current snapshot before applying a pure
@@ -2335,8 +3144,15 @@ function apply(ctx) {
       move: (workspaceId, folderId, direction) => editable(
         state => write(moveFolder(state, workspaceId, folderId, direction)),
       ),
+      reorder: (workspaceId, movingId, targetId, position) => editable(
+        state => write(reorderFolder(state, workspaceId, movingId, targetId, position)),
+      ),
       assign: (workspaceId, sessionId, folderId, options = {}) => editable((state) => {
         const next = prune(assignSession(state, workspaceId, sessionId, folderId), workspaceId, options)
+        return write(next)
+      }),
+      assignMany: (workspaceId, sessionIds, folderId, options = {}) => editable((state) => {
+        const next = prune(assignSessions(state, workspaceId, sessionIds, folderId), workspaceId, options)
         return write(next)
       }),
     }
@@ -2367,15 +3183,15 @@ function apply(ctx) {
     listeners: new Set(),
     getSnapshot: () => notice,
     subscribe(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener) },
-    set(next) { notice = next; for (const listener of this.listeners) listener() },
+    set(next, tone = 'info') { notice = { text: String(next), tone }; for (const listener of this.listeners) listener() },
   }
 
   const report = (error) => {
     // The host refuses to archive a session with running work; name that case
     // explicitly instead of showing a raw carrier failure.
     const active = error?.rpcError?.code === 'workspace/session-active'
-    const prefix = active ? '' : zh['notice.failed']
-    noticeSource.set(active ? zh['notice.sessionActive'] : `${prefix}${error?.message || String(error)}`)
+    const prefix = active ? '' : hostT('notice.failed')
+    noticeSource.set(active ? hostT('notice.sessionActive') : `${prefix}${error?.message || String(error)}`, 'warn')
     console.warn('[dsh-session-manager] action failed', error)
   }
   // Host calls fire synchronously so an interaction is never a frame behind the
@@ -2388,86 +3204,141 @@ function apply(ctx) {
     }
   }
 
-  ctx.slots.inject('sidebar.workspaces', () => ctx.slots.register({
-    name: 'sidebar.workspaces',
-    priority: SLOT_PRIORITY,
-    locale: NS,
-    registrant: '@pianner/dsh-session-manager',
-    inject: () => ({
-      open: sessionId => ctx.uiWorkspace.openSession(sessionId),
-      // The Host materializes a session's job roster only while some surface
-      // watches it (`ctx.jobs.watchRows`). The region decides which sessions are
-      // on screen; this is the stable call it hands down, resolved on every use
-      // so a late-installed job service is picked up instead of watched forever
-      // from a captured undefined.
-      watchRows: (sessionId) => {
-        const service = ctx.get('jobs')
-        if (typeof service?.watchRows !== 'function') return undefined
-        try {
-          return service.watchRows(sessionId)
-        } catch (error) {
-          console.warn('[dsh-session-manager] watchRows failed', error)
-          return undefined
-        }
-      },
-      startSession: workspaceId => ctx.uiWorkspace.startSession(workspaceId),
-      pinSession: sessionId => invoke(() => ctx.uiWorkspace.pinSession(sessionId)),
-      unpinSession: sessionId => invoke(() => ctx.uiWorkspace.unpinSession(sessionId)),
-      archiveSession: sessionId => invoke(() => ctx.uiWorkspace.archiveSession(sessionId)),
-      unarchiveSession: sessionId => invoke(() => ctx.uiWorkspace.unarchiveSession(sessionId)),
-      forkSession: sessionId => invoke(() => ctx.uiWorkspace.forkSession(sessionId)),
-      renameSession: (sessionId, title) => ctx.sessions.using(
-        sessionId,
-        { source: 'workspaceOperation' },
-        reference => reference.binding.session.rename(title),
-      ).then((result) => {
-        if (result?.ok === false) throw new Error(result.error?.message || 'rename failed')
-      }),
-      insertSessionBefore: (workspaceId, sessionId, beforeSessionId) => invoke(
-        () => ctx.workspaces.insertSessionBefore(workspaceId, sessionId, beforeSessionId),
-      ),
-      insertWorkspaceBefore: (workspaceId, beforeWorkspaceId) => invoke(
-        () => ctx.workspaces.insertBefore(workspaceId, beforeWorkspaceId),
-      ),
-      searchSessions: (query, signal) => Promise.resolve(ctx.sessions.search(query, signal)).then((result) => {
-        if (result?.ok === false) throw new Error(result.error?.message || 'session search failed')
-        return result.value
-      }),
-      searchResultLimit: ctx.sessions.searchResultLimit,
-      pickDirectory: () => ctx.uiWorkspace.pickDirectory(),
-      createWorkspace: input => ctx.workspaces.create(input),
-      reportFailure: report,
-      copyText: (text) => invoke(async () => {
-        if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return }
-        throw new Error(zh['notice.copyFailed'])
-      }),
-      clearNotice: () => noticeSource.set(null),
-      // The stores themselves ride the face so the region can subscribe on its own.
-      priorityStore: priorities,
-      folderStore: folders,
-      folderActions,
-      // Priority labels are plugin-owned state, so the write lives beside the
-      // store rather than in the region that renders it.
-      // Bulk edits land as one store write, so a large selection repaints once.
-      setPriorities: (sessionIds, priorityId) => {
-        const level = priorityLevel(priorityId)
-        const next = { ...priorities.getSnapshot() }
-        for (const sessionId of sessionIds) {
+  const registerRegion = () => ctx.slots.register({
+      name: 'sidebar.workspaces',
+      priority: SLOT_PRIORITY,
+      locale: NS,
+      registrant: '@pianner/dsh-session-manager',
+      inject: () => ({
+        open: sessionId => ctx.uiWorkspace.openSession(sessionId),
+        // The Host materializes a session's job roster only while some surface
+        // watches it (`ctx.jobs.watchRows`). The region decides which sessions are
+        // on screen; this is the stable call it hands down, resolved on every use
+        // so a late-installed job service is picked up instead of watched forever
+        // from a captured undefined.
+        watchRows: (sessionId) => {
+          const service = ctx.get('jobs')
+          if (typeof service?.watchRows !== 'function') return undefined
+          try {
+            return service.watchRows(sessionId)
+          } catch (error) {
+            console.warn('[dsh-session-manager] watchRows failed', error)
+            return undefined
+          }
+        },
+        startSession: workspaceId => ctx.uiWorkspace.startSession(workspaceId),
+        pinSession: sessionId => invoke(() => ctx.uiWorkspace.pinSession(sessionId)),
+        unpinSession: sessionId => invoke(() => ctx.uiWorkspace.unpinSession(sessionId)),
+        archiveSession: sessionId => invoke(() => ctx.uiWorkspace.archiveSession(sessionId)),
+        setAutoArchive: days => autoArchive.set(readAutoArchive({ days })),
+      setTakeover: next => takeover.set({ mode: next ? 'on' : 'off' }),
+      reportNotice: message => noticeSource.set(String(message), 'success'),
+        autoArchiveStore: autoArchive,
+        // Bulk archive is one call so a sweep and the priority view share the same
+        // failure accounting: each session is still its own host write.
+        archiveMany: sessionIds => Promise.allSettled((sessionIds || []).map(
+          sessionId => Promise.resolve(ctx.uiWorkspace.archiveSession(sessionId)),
+        )).then(results => ({
+          archived: results.filter(result => result.status === 'fulfilled').length,
+          failed: results.filter(result => result.status === 'rejected').length,
+        })),
+        unarchiveSession: sessionId => invoke(() => ctx.uiWorkspace.unarchiveSession(sessionId)),
+        forkSession: sessionId => invoke(() => ctx.uiWorkspace.forkSession(sessionId)),
+        renameSession: (sessionId, title) => ctx.sessions.using(
+          sessionId,
+          { source: 'workspaceOperation' },
+          reference => reference.binding.session.rename(title),
+        ).then((result) => {
+          if (result?.ok === false) throw new Error(result.error?.message || 'rename failed')
+          // The title is a Host projection: nudge a refresh so the row cannot
+          // keep showing the old title when no live frame follows the rename.
+          // It must not gate the dialog: a slow refresh is not a failed rename.
+          try { Promise.resolve(ctx.sessions.refresh?.()).catch(() => {}) } catch { /* projection only */ }
+        }),
+        insertSessionBefore: (workspaceId, sessionId, beforeSessionId) => invoke(
+          () => ctx.workspaces.insertSessionBefore(workspaceId, sessionId, beforeSessionId),
+        ),
+        insertWorkspaceBefore: (workspaceId, beforeWorkspaceId) => invoke(
+          () => ctx.workspaces.insertBefore(workspaceId, beforeWorkspaceId),
+        ),
+        searchSessions: (query, signal) => Promise.resolve(ctx.sessions.search(query, signal)).then((result) => {
+          if (result?.ok === false) throw new Error(result.error?.message || 'session search failed')
+          return result.value
+        }),
+        searchResultLimit: ctx.sessions.searchResultLimit,
+        pickDirectory: () => ctx.uiWorkspace.pickDirectory(),
+        createWorkspace: input => ctx.workspaces.create(input),
+        reportFailure: report,
+        copyText: (text) => invoke(async () => {
+          if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return }
+          throw new Error(hostT('notice.copyFailed'))
+        }),
+        clearNotice: () => noticeSource.set(null),
+        // The stores themselves ride the face so the region can subscribe on its own.
+        priorityStore: priorities,
+        folderStore: folders,
+        folderActions,
+        // Priority labels are plugin-owned state, so the write lives beside the
+        // store rather than in the region that renders it.
+        // Bulk edits land as one store write, so a large selection repaints once.
+        setPriorities: (sessionIds, priorityId) => {
+          const level = priorityLevel(priorityId)
+          const next = { ...priorities.getSnapshot() }
+          for (const sessionId of sessionIds) {
+            if (level === undefined) delete next[sessionId]
+            else next[sessionId] = level
+          }
+          priorities.set(next)
+        },
+        setPriority: (sessionId, priorityId) => {
+          const next = { ...priorities.getSnapshot() }
+          const level = priorityLevel(priorityId)
           if (level === undefined) delete next[sessionId]
           else next[sessionId] = level
-        }
-        priorities.set(next)
-      },
-      setPriority: (sessionId, priorityId) => {
-        const next = { ...priorities.getSnapshot() }
-        const level = priorityLevel(priorityId)
-        if (level === undefined) delete next[sessionId]
-        else next[sessionId] = level
-        priorities.set(next)
-      },
-      hooks: { notice: noticeSource, jobs: jobsSource },
-    }),
-  }, SessionManagerRegion))
+          priorities.set(next)
+        },
+        hooks: { notice: noticeSource, jobs: jobsSource },
+      }),
+    }, SessionManagerRegion)
+
+  ctx.effect(() => ctx.slots.inject('sidebar.workspaces', () => {
+    let dispose
+    const arm = () => {
+      if (readTakeover(takeover.getSnapshot()) === 'on') {
+        if (dispose === undefined) dispose = registerRegion()
+        return
+      }
+      if (dispose === undefined) return
+      dispose()
+      dispose = undefined
+    }
+    const stop = takeover.subscribe(arm)
+    arm()
+    return () => {
+      stop()
+      if (dispose !== undefined) { dispose(); dispose = undefined }
+    }
+  }), 'dsh-session-manager: browsing region')
+
+  // The foot of the sidebar carries the way back while the region is handed to
+  // the shipped browser: without it, yielding would be a one-way door.
+  ctx.effect(() => {
+    // The foot action is an extra, not a requirement: a build without the slot
+    // (or one that rejects the name) must still mount the browsing region.
+    try {
+      return ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+        name: 'sidebar.footer.action',
+        id: 'dsh-session-manager-takeover',
+        order: 900,
+        locale: NS,
+        registrant: '@pianner/dsh-session-manager',
+        inject: () => ({ takeover, setTakeover: next => takeover.set({ mode: next ? 'on' : 'off' }) }),
+      }, TakeoverFooterAction))
+    } catch (error) {
+      console.warn('[dsh-session-manager] footer toggle unavailable', error)
+      return undefined
+    }
+  }, 'dsh-session-manager: takeover toggle')
 }
 
 module.exports = { inject, apply }

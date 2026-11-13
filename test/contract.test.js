@@ -55,6 +55,9 @@ function createReact() {
   }
 
   return {
+    // The lane renders through its own hook shim; memo is an optimization only,
+    // so it stays an identity wrapper here (the browser harness uses real React).
+    memo(component) { return component },
     createElement(type, props, ...children) {
       return {
         type,
@@ -202,8 +205,10 @@ function fixtures() {
 function applyPlugin({ withJobs = true } = {}) {
   const { exports, react, styleEl, documentListeners, windowListeners, clipboardWrites } = loadBundle()
   const calls = []
+  const dictionaries = {}
   const effects = []
   let registered = null
+  const registrations = []
   let pickResult = '/tmp/picked'
   let searchResult = { items: [], hasMore: false }
   const jobs = fixtures().jobs
@@ -227,10 +232,24 @@ function applyPlugin({ withJobs = true } = {}) {
   const ctx = {
     effect(factory, label) { effects.push({ label, dispose: factory() }) },
     get: name => (name === 'jobs' ? (withJobs ? jobsService : undefined) : undefined),
-    locale: { register: (ns, dicts) => { calls.push(['locale.register', ns, Object.keys(dicts)]); return () => {} } },
+    locale: {
+      register: (ns, dicts) => { dictionaries[ns] = dicts; calls.push(['locale.register', ns, Object.keys(dicts)]); return () => {} },
+      // The host half binds the namespace for its own notices; the fake
+      // resolves against the registered zh dictionary.
+      bind: ns => (key) => dictionaries[ns]?.zh?.[key] ?? key,
+    },
     slots: {
       inject(name, callback) { calls.push(['slots.inject', name]); callback() },
-      register(options, Component) { registered = { options, Component }; return () => {} },
+      register(options, Component) {
+        const entry = { options, Component }
+        registrations.push(entry)
+        if (options.name === 'sidebar.workspaces') registered = entry
+        return () => {
+          const at = registrations.indexOf(entry)
+          if (at >= 0) registrations.splice(at, 1)
+          if (registered === entry) registered = null
+        }
+      },
     },
     uiWorkspace: {
       openSession: id => calls.push(['openSession', id]),
@@ -263,7 +282,7 @@ function applyPlugin({ withJobs = true } = {}) {
   assert.ok(registered, 'apply must register the sidebar browsing region')
   const injected = registered.options.inject()
   return {
-    calls, clipboardWrites, effects, registered, injected, exports, react, styleEl, documentListeners, windowListeners, watched,
+    calls, clipboardWrites, effects, registered, registrations, injected, exports, react, styleEl, documentListeners, windowListeners, watched,
     setPickResult(result) { pickResult = result },
     setSearchResult(result) { searchResult = result },
   }
@@ -754,7 +773,7 @@ test('the view-options menu is controlled by its anchor', () => {
   // `Menu` renders nothing until it is told to: an anchor without an opener and
   // a menu without `open` is a button that appears to do nothing.
   assert.equal(menu.props.open, false)
-  assert.deepEqual(plain(menu.props.selectedIds), ['orderManual', 'archivedDefault'])
+  assert.deepEqual(plain(menu.props.selectedIds), ['orderManual', 'archivedDefault', 'autoOff'])
   assert.equal(menu.props.align, 'end')
   assert.equal(menu.props.portal, true)
   menu.props.anchor.props.onClick()
@@ -763,7 +782,7 @@ test('the view-options menu is controlled by its anchor', () => {
   opened.props.onSelect('orderUpdated')
   const picked = headerMenu(region.render().tree)
   assert.equal(picked.props.open, false, 'a selection closes the menu')
-  assert.deepEqual(plain(picked.props.selectedIds), ['orderUpdated', 'archivedDefault'])
+  assert.deepEqual(plain(picked.props.selectedIds), ['orderUpdated', 'archivedDefault', 'autoOff'])
 })
 
 test('both fixed sections fold on their own and keep their headers', () => {
@@ -778,7 +797,6 @@ test('both fixed sections fold on their own and keep their headers', () => {
   const full = rowCount(region.tree)
   // The project fold hides every workspace group in one gesture.
   // Both fixed sections use the same heading control: 0 = pinned, 1 = project.
-  const pinnedToggle = headerOf(region.tree, 'dsm-heading-header', 0)
   const projectToggle = headerOf(region.tree, 'dsm-heading-header', 1)
   assert.equal(projectToggle.props['aria-expanded'], 'true')
   projectToggle.props.onClick()
@@ -1374,7 +1392,7 @@ test('a rejected pick is reported instead of swallowed', async () => {
   walk(failureTree, node => { if (node.props?.['aria-label'] === 'action.addWorkspace') failureEntry = node })
   failureEntry.props.onClick()
   await new Promise(resolve => setImmediate(resolve))
-  assert.match(String(applied.injected.hooks.notice.getSnapshot()), /picker offline/)
+  assert.match(String(applied.injected.hooks.notice.getSnapshot()?.text), /picker offline/)
   assert.ok(entry && original)
 })
 
@@ -1738,4 +1756,52 @@ test('the storage listener adopts another window and is removed on cleanup', () 
 
   for (const effect of applied.effects) if (typeof effect.dispose === 'function') effect.dispose()
   assert.equal((applied.windowListeners.get('storage')?.size ?? 0), 0)
+})
+
+test('yielding disposes the region and the footer action takes it back', () => {
+  const applied = applyPlugin()
+  const footer = applied.registrations.find(entry => entry.options.name === 'sidebar.footer.action')
+  assert.ok(footer, 'the sidebar foot carries the takeover toggle')
+  const regions = () => applied.registrations.filter(entry => entry.options.name === 'sidebar.workspaces')
+  assert.equal(regions().length, 1)
+  footer.options.inject().setTakeover(false)
+  assert.equal(regions().length, 0, 'yielding removes the workspace registration')
+  footer.options.inject().setTakeover(true)
+  assert.equal(regions().length, 1, 'taking over again restores the registration')
+})
+
+test('filing a row into a folder keeps that folder other sessions', () => {
+  const applied = applyPlugin()
+  const injected = applied.injected
+  const members = ['w1-a', 'pinned', 'w1-b', 'w1-c']
+  injected.folderActions.create('w1', 'Design', { id: 'f-1', memberIds: members, ready: true })
+  injected.folderActions.create('w1', 'Triage', { id: 'f-2', memberIds: members, ready: true })
+  // Two sessions already filed in Design; the drag files a third into Triage.
+  injected.folderActions.assign('w1', 'w1-a', 'f-1', { ready: true, memberIds: members })
+  injected.folderActions.assign('w1', 'w1-b', 'f-1', { ready: true, memberIds: members })
+  const region = renderRegion(applied)
+  const row = rowsOf(region.tree).find(node => node.props?.['data-dsm-session'] === 'w1-c')
+  assert.ok(row, 'the unfiled row renders')
+  const folder = {
+    getAttribute: name => (name === 'data-dsm-folder-id' ? 'f-2' : name === 'data-dsm-folder-ws' ? 'w1' : null),
+    closest: selector => (selector === '[data-dsm-folder-id]' ? folder : null),
+    getBoundingClientRect: () => ({ top: 0, bottom: 28, height: 28, left: 0, right: 240 }),
+  }
+  row.props.onPointerDown(pointerEvent({ currentTarget: rowElement('w1-c') }))
+  row.props.onPointerMove(pointerEvent({ clientX: 20, clientY: 40, target: folder }))
+  row.props.onPointerUp()
+  const membersOf = (tree, folderId) => {
+    let group = null
+    walk(tree, node => { if (node.props?.['data-dsm-folder-id'] === folderId) group = node })
+    return rowsOf(group).map(node => node.props['data-dsm-session'])
+  }
+  const tree = region.render().tree
+  // The bug this pins: pruning used the section's rows instead of the
+  // workspace's members, so filing one row emptied every other folder.
+  assert.deepEqual(membersOf(tree, 'f-1').sort(), ['w1-a', 'w1-b'])
+  assert.deepEqual(membersOf(tree, 'f-2').sort(), ['w1-c'])
+  // The gesture is over: no row may keep `data-dragging` (its half-opacity is
+  // what made a filed row look recoloured).
+  const dragging = rowsOf(tree).filter(node => node.props?.['data-dragging'] === 'true')
+  assert.deepEqual(dragging, [])
 })
