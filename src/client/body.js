@@ -2308,10 +2308,15 @@ function portal(node) {
  * @returns {object|null}
  */
 function RootSubagentAction(props) {
-  const { sessionId, useSession, useSessions, useSessionStatus, useProjection, actions, renderSlot, hooks, t } = props
+  const { sessionId, useSession, useSessions, useSessionStatus, useProjection, actions, renderSlot, hooks, useFooterAvailable, t } = props
   const addressed = useSession ? useSession(snapshot => snapshot?.subagent != null) : false
   const listedChild = useSessions(state => state?.byId?.[sessionId]?.origin === 'subagent')
-  const footerAvailable = hooks?.footerAvailable ? useSyncExternalStore(hooks.footerAvailable.subscribe, hooks.footerAvailable.getSnapshot) : false
+  // The renderer turns each `hooks.<name>` of the inject face into a
+  // `use<Name>` selector prop (the region reads `useNotice` the same way); the
+  // raw `hooks` object only reaches a component outside the renderer.
+  const footerAvailable = typeof useFooterAvailable === 'function'
+    ? useFooterAvailable(value => value) === true
+    : hooks?.footerAvailable ? useSyncExternalStore(hooks.footerAvailable.subscribe, hooks.footerAvailable.getSnapshot) : false
   const teamTasks = useProjection ? useProjection('agentTeam', team => team?.enabled === true && (team.tasks || []).some(task => task.status !== 'deleted')) : false
   const teamFailure = useProjection ? useProjection('agentTeam', team => team?.enabled === true && team.failure !== undefined) : false
   if (addressed || listedChild) return null

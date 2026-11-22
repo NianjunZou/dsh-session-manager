@@ -2009,3 +2009,29 @@ test('opening a session elsewhere unfolds the blocks that hide its row', () => {
   assert.ok(rowsOf(shown).some(row => row.props['data-dsm-session'] === 'w2-a'), 'its block unfolds')
   assert.equal(applied.calls.some(call => call[0] === 'openSession'), false, 'revealing never opens anything')
 })
+
+test('the catalog keeps the team board seat through the renderer hook prop', () => {
+  const applied = applyPlugin()
+  const data = subagentFixture()
+  const catalog = applied.registrations.find(entry => entry.options.name === 'conversation.session.header.actions' && entry.options.id === 'subagent-catalog')
+  const face = catalog.options.inject('w1-b')
+  delete face.hooks
+  const footerCalls = []
+  // A root session with no subagents but a team task: the renderer hands the
+  // footer availability as `useFooterAvailable`, never as raw `hooks`.
+  const props = slotProps(applied, data, {
+    sessionId: 'w1-b',
+    ...face,
+    useFooterAvailable: selector => selector(true),
+    useProjection: (_key, selector) => selector({ enabled: true, tasks: [{ status: 'pending' }] }),
+    renderSlot: (key) => { footerCalls.push(key); return { type: 'team-board', props: { children: [] } } },
+  })
+  const event = { stopPropagation() {}, preventDefault() {}, pointerType: 'mouse' }
+  const first = applied.react.render(catalog.Component, props).tree
+  const trigger = findAll(first, node => node.props?.className === 'dsm-sa-trigger')[0]
+  assert.ok(trigger, 'the entry shows for a team with tasks even without subagents')
+  trigger.props.onClick(event)
+  const opened = applied.react.render(catalog.Component, props).tree
+  assert.ok(findAll(opened, node => node.type === 'team-board').length === 1, 'the team board renders at the bottom')
+  assert.deepEqual(footerCalls.filter(key => key === 'conversation.session.header.actions.subagent.footer').length > 0, true)
+})
