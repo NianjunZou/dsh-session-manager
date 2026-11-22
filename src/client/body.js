@@ -1371,7 +1371,7 @@ function SessionRow({
   workspaceLabel, workspaceHint, snippet, titleMatch, canReorder = false, priority, flat = false,
   pinnedSection = false, selectable = false, selected = false, onToggleSelect, toggleLabel,
   groupedByPriority = false, folderOptions, scope, onFolderOver, onAssignFolder, bulkMulti = false,
-  stacked = false, model, subagents = NO_SUBAGENTS,
+  stacked = false, model, subagents = NO_SUBAGENTS, registerRow,
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [subsOpen, setSubsOpen] = useState(false)
@@ -1464,6 +1464,7 @@ function SessionRow({
   }, priority.toUpperCase())
   const hasSub = workspaceNode !== null || snippetNode !== null
   const row = h('div', {
+    ref: registerRow === undefined ? undefined : element => registerRow(sessionId, element),
     className: 'dsm-row',
     'data-priority': priority,
     role: 'treeitem',
@@ -3032,6 +3033,13 @@ function SessionManagerRegion(props) {
     return cache
   }, [folderEntries, folderReadonly, workspaceMembers])
 
+  // Row elements by session id: the region scrolls the opened session into view
+  // without querying DOM.
+  const rowElements = useMemo(() => new Map(), [])
+  const registerRow = useCallback((id, element) => {
+    if (element) rowElements.set(id, element)
+    else rowElements.delete(id)
+  }, [rowElements])
   const renderRow = useCallback((sessionId, accountId, accountOrder, layout = {}) => {
     const {
       flat = false, pinnedSection = false,
@@ -3069,6 +3077,7 @@ function SessionManagerRegion(props) {
       bulkMulti,
       model: modelIndex.get(sessionId),
       subagents: subagentIndex.get(sessionId),
+      registerRow,
       onDragStart: setDrag,
       // `dragover` fires continuously: only a *changed* cell may re-render.
       // A pointer stream is continuous: only a *changed* cell may re-render.
@@ -3100,7 +3109,7 @@ function SessionManagerRegion(props) {
   // `priorities` belongs here: without it the memoised renderer kept writing the
   // labels it saw when it was created, so a new P1–P4 choice only showed up after
   // something else rebuilt the rows.
-  }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder, modelIndex, subagentIndex,
+  }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder, modelIndex, registerRow, subagentIndex,
     handleDragEnd, handleDragOverMulti, handleDragOverRow, handleFolderOver, handleToggleSelect, move, open,
     pinnedSet, priorities, selectAction, statusCache, statusOfId, t, workspaceLabelBySession, workspaceOf])
 
@@ -3125,6 +3134,35 @@ function SessionManagerRegion(props) {
     }
     return { buckets, unmarked }
   }, [orderedIds, priorities, archivedSet, archivedFilter, t])
+  // Opening a session from anywhere (a system notification, search, a link)
+  // unfolds the blocks that hide its row and scrolls it into view. Only on a
+  // change of the opened session: folding its block afterwards stays folded.
+  const revealed = useRef(null)
+  const pendingScroll = useRef(null)
+  useEffect(() => {
+    if (searching || currentId === undefined || revealed.current === currentId) return
+    const spot = locateSession({
+      sessionId: currentId, pinnedOrder, groups: tree.groups, folderViews, priorityLevels, priorityView,
+    })
+    if (spot === undefined) return
+    revealed.current = currentId
+    if (spot.level !== undefined) setLevelCollapsed(state => (state[spot.level] === true ? { ...state, [spot.level]: false } : state))
+    if (spot.pinned) setPinnedCollapsed(false)
+    if (spot.groupKey !== undefined) {
+      setProjectsCollapsed(false)
+      setCollapsed(state => (state[spot.groupKey] === true ? { ...state, [spot.groupKey]: false } : state))
+    }
+    if (spot.folderKey !== undefined) setFolderCollapsed(state => (state[spot.folderKey] === true ? { ...state, [spot.folderKey]: false } : state))
+    pendingScroll.current = currentId
+  }, [currentId, searching, pinnedOrder, tree, folderViews, priorityLevels, priorityView])
+  useEffect(() => {
+    const target = pendingScroll.current
+    if (target === null) return
+    const element = rowElements.get(target)
+    if (!element) return
+    pendingScroll.current = null
+    element.scrollIntoView?.({ block: 'nearest' })
+  })
   const markedCount = priorityLevels.buckets.reduce((total, bucket) => total + bucket.ids.length, 0)
   const toggleSelected = useCallback((sessionId) => {
     setSelected((current) => {

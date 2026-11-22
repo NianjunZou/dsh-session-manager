@@ -57,6 +57,7 @@ import {
   shortModel,
   sharedRouteSuffix,
   workspaceForSession,
+  locateSession,
   buildRollup,
   computeGroups,
   descendantsOf,
@@ -1140,4 +1141,16 @@ test('workspaceForSession resolves a subagent through its root', () => {
   assert.equal(workspaceForSession(list, workspaces, 'grand')?.workspaceId, 'w')
   assert.equal(workspaceForSession(list, workspaces, 'root')?.workspaceId, 'w')
   assert.equal(workspaceForSession(list, workspaces, 'lost'), undefined)
+})
+
+test('locateSession names the blocks that hide a session', () => {
+  const groups = [{ key: 'w1', sessions: ['a', 'b'] }, { key: 'w2', sessions: ['c'] }]
+  const folderViews = { w1: { sections: [{ key: 'w1:f1', sessions: ['b'] }, { key: 'w1:none', sessions: ['a'] }] } }
+  assert.deepEqual(locateSession({ sessionId: 'b', groups, folderViews }), { groupKey: 'w1', folderKey: 'w1:f1' })
+  assert.deepEqual(locateSession({ sessionId: 'c', groups, folderViews }), { groupKey: 'w2' })
+  assert.deepEqual(locateSession({ sessionId: 'a', pinnedOrder: ['a'], groups }), { pinned: true })
+  const priorityLevels = { buckets: [{ level: 'p1', ids: ['c'] }], unmarked: ['a'] }
+  assert.deepEqual(locateSession({ sessionId: 'c', groups, priorityLevels, priorityView: true }), { level: 'p1' })
+  assert.deepEqual(locateSession({ sessionId: 'a', groups, priorityLevels, priorityView: true }), { level: 'unmarked' })
+  assert.equal(locateSession({ sessionId: 'zz', groups }), undefined)
 })

@@ -1563,6 +1563,32 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Where a session sits in the rendered tree, so the region can unfold exactly
+     * the blocks that hide it: the pinned block, or its workspace group and
+     * folder section; in the priority view, its level bucket.
+     *
+     * @param {object} input - `sessionId`, `pinnedOrder`, `groups`, `folderViews`,
+     * `priorityLevels`, `priorityView`.
+     * @returns {{pinned?: true, groupKey?: string, folderKey?: string, level?: string}|undefined}
+     */
+    function locateSession({ sessionId, pinnedOrder = [], groups = [], folderViews = {}, priorityLevels, priorityView = false }) {
+      if (typeof sessionId !== 'string') return undefined
+      if (priorityView) {
+        const bucket = priorityLevels?.buckets?.find(candidate => candidate.ids.includes(sessionId))
+        if (bucket) return { level: bucket.level }
+        if (priorityLevels?.unmarked?.includes(sessionId)) return { level: 'unmarked' }
+        return undefined
+      }
+      if (pinnedOrder.includes(sessionId)) return { pinned: true }
+      for (const group of groups) {
+        if (!group.sessions?.includes(sessionId)) continue
+        const section = folderViews[group.key]?.sections?.find(candidate => candidate.sessions?.includes(sessionId))
+        return section ? { groupKey: group.key, folderKey: section.key } : { groupKey: group.key }
+      }
+      return undefined
+    }
+
+    /**
      * Page a block must open at so nothing that needs attention stays hidden.
      * @param {readonly string[]} ids - the block's members, in render order.
      * @param {Set<string>} attention - sessions at work, waiting or unread.
@@ -3150,7 +3176,7 @@ window.__ModuleLoader__.load({
       workspaceLabel, workspaceHint, snippet, titleMatch, canReorder = false, priority, flat = false,
       pinnedSection = false, selectable = false, selected = false, onToggleSelect, toggleLabel,
       groupedByPriority = false, folderOptions, scope, onFolderOver, onAssignFolder, bulkMulti = false,
-      stacked = false, model, subagents = NO_SUBAGENTS,
+      stacked = false, model, subagents = NO_SUBAGENTS, registerRow,
     }) {
       const [menuOpen, setMenuOpen] = useState(false)
       const [subsOpen, setSubsOpen] = useState(false)
@@ -3243,6 +3269,7 @@ window.__ModuleLoader__.load({
       }, priority.toUpperCase())
       const hasSub = workspaceNode !== null || snippetNode !== null
       const row = h('div', {
+        ref: registerRow === undefined ? undefined : element => registerRow(sessionId, element),
         className: 'dsm-row',
         'data-priority': priority,
         role: 'treeitem',
@@ -4811,6 +4838,13 @@ window.__ModuleLoader__.load({
         return cache
       }, [folderEntries, folderReadonly, workspaceMembers])
 
+      // Row elements by session id: the region scrolls the opened session into view
+      // without querying DOM.
+      const rowElements = useMemo(() => new Map(), [])
+      const registerRow = useCallback((id, element) => {
+        if (element) rowElements.set(id, element)
+        else rowElements.delete(id)
+      }, [rowElements])
       const renderRow = useCallback((sessionId, accountId, accountOrder, layout = {}) => {
         const {
           flat = false, pinnedSection = false,
@@ -4848,6 +4882,7 @@ window.__ModuleLoader__.load({
           bulkMulti,
           model: modelIndex.get(sessionId),
           subagents: subagentIndex.get(sessionId),
+          registerRow,
           onDragStart: setDrag,
           // `dragover` fires continuously: only a *changed* cell may re-render.
           // A pointer stream is continuous: only a *changed* cell may re-render.
@@ -4879,7 +4914,7 @@ window.__ModuleLoader__.load({
       // `priorities` belongs here: without it the memoised renderer kept writing the
       // labels it saw when it was created, so a new P1–P4 choice only showed up after
       // something else rebuilt the rows.
-      }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder, modelIndex, subagentIndex,
+      }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder, modelIndex, registerRow, subagentIndex,
         handleDragEnd, handleDragOverMulti, handleDragOverRow, handleFolderOver, handleToggleSelect, move, open,
         pinnedSet, priorities, selectAction, statusCache, statusOfId, t, workspaceLabelBySession, workspaceOf])
 
@@ -4904,6 +4939,35 @@ window.__ModuleLoader__.load({
         }
         return { buckets, unmarked }
       }, [orderedIds, priorities, archivedSet, archivedFilter, t])
+      // Opening a session from anywhere (a system notification, search, a link)
+      // unfolds the blocks that hide its row and scrolls it into view. Only on a
+      // change of the opened session: folding its block afterwards stays folded.
+      const revealed = useRef(null)
+      const pendingScroll = useRef(null)
+      useEffect(() => {
+        if (searching || currentId === undefined || revealed.current === currentId) return
+        const spot = locateSession({
+          sessionId: currentId, pinnedOrder, groups: tree.groups, folderViews, priorityLevels, priorityView,
+        })
+        if (spot === undefined) return
+        revealed.current = currentId
+        if (spot.level !== undefined) setLevelCollapsed(state => (state[spot.level] === true ? { ...state, [spot.level]: false } : state))
+        if (spot.pinned) setPinnedCollapsed(false)
+        if (spot.groupKey !== undefined) {
+          setProjectsCollapsed(false)
+          setCollapsed(state => (state[spot.groupKey] === true ? { ...state, [spot.groupKey]: false } : state))
+        }
+        if (spot.folderKey !== undefined) setFolderCollapsed(state => (state[spot.folderKey] === true ? { ...state, [spot.folderKey]: false } : state))
+        pendingScroll.current = currentId
+      }, [currentId, searching, pinnedOrder, tree, folderViews, priorityLevels, priorityView])
+      useEffect(() => {
+        const target = pendingScroll.current
+        if (target === null) return
+        const element = rowElements.get(target)
+        if (!element) return
+        pendingScroll.current = null
+        element.scrollIntoView?.({ block: 'nearest' })
+      })
       const markedCount = priorityLevels.buckets.reduce((total, bucket) => total + bucket.ids.length, 0)
       const toggleSelected = useCallback((sessionId) => {
         setSelected((current) => {

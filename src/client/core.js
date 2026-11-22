@@ -1549,6 +1549,32 @@ export function subagentParentOf(list, sessionId) {
 }
 
 /**
+ * Where a session sits in the rendered tree, so the region can unfold exactly
+ * the blocks that hide it: the pinned block, or its workspace group and
+ * folder section; in the priority view, its level bucket.
+ *
+ * @param {object} input - `sessionId`, `pinnedOrder`, `groups`, `folderViews`,
+ * `priorityLevels`, `priorityView`.
+ * @returns {{pinned?: true, groupKey?: string, folderKey?: string, level?: string}|undefined}
+ */
+export function locateSession({ sessionId, pinnedOrder = [], groups = [], folderViews = {}, priorityLevels, priorityView = false }) {
+  if (typeof sessionId !== 'string') return undefined
+  if (priorityView) {
+    const bucket = priorityLevels?.buckets?.find(candidate => candidate.ids.includes(sessionId))
+    if (bucket) return { level: bucket.level }
+    if (priorityLevels?.unmarked?.includes(sessionId)) return { level: 'unmarked' }
+    return undefined
+  }
+  if (pinnedOrder.includes(sessionId)) return { pinned: true }
+  for (const group of groups) {
+    if (!group.sessions?.includes(sessionId)) continue
+    const section = folderViews[group.key]?.sections?.find(candidate => candidate.sessions?.includes(sessionId))
+    return section ? { groupKey: group.key, folderKey: section.key } : { groupKey: group.key }
+  }
+  return undefined
+}
+
+/**
  * Page a block must open at so nothing that needs attention stays hidden.
  * @param {readonly string[]} ids - the block's members, in render order.
  * @param {Set<string>} attention - sessions at work, waiting or unread.

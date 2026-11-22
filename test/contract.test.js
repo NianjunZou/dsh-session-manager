@@ -1988,3 +1988,24 @@ test('the header names the session workspace as passive text, a subagent its roo
   const orphan = applied.react.render(badge.Component, { ...props, sessionId: 'nowhere' }).tree
   assert.equal(orphan, null, 'no badge for a session outside every workspace')
 })
+
+test('opening a session elsewhere unfolds the blocks that hide its row', () => {
+  const applied = applyPlugin()
+  const region = renderRegion(applied)
+  const headerOf = (tree, className, index = 0) => {
+    const found = []
+    walk(tree, node => { if (node.props?.className === className) found.push(node) })
+    return found[index]
+  }
+  // Fold the whole project block: w2-a is no longer painted.
+  headerOf(region.tree, 'dsm-heading-header', 1).props.onClick()
+  const folded = region.render().tree
+  assert.ok(!rowsOf(folded).some(row => row.props['data-dsm-session'] === 'w2-a'))
+  // A system notification (or any other surface) opens w2-a.
+  region.data.list.byId.pinned.retainedBy = { mainView: 0 }
+  region.data.list.byId['w2-a'].retainedBy = { mainView: 1 }
+  region.render()
+  const shown = region.render().tree
+  assert.ok(rowsOf(shown).some(row => row.props['data-dsm-session'] === 'w2-a'), 'its block unfolds')
+  assert.equal(applied.calls.some(call => call[0] === 'openSession'), false, 'revealing never opens anything')
+})
