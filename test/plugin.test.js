@@ -403,7 +403,9 @@ test('dropping a row on a folder header files it there', () => {
   assert.match(code, /onFolderOver: folderOptions === undefined \? undefined : handleFolderOver/)
   assert.match(code, /const target = folderId === FOLDER_UNFILED \? null : folderId/)
   assert.match(code, /current\.folderActions\.assign\(workspaceId, sessionId, target, options\)/)
-  assert.match(code, /if \(active && \(bulkMulti \|\| !hasRowTarget\) && folderId !== null && onAssignFolder !== undefined\)/)
+  // A row in another folder of the same workspace files into that folder too.
+  assert.match(code, /if \(active && \(bulkMulti \|\| !hasRowTarget \|\| crossFolder\) && folderId !== null && onAssignFolder !== undefined\)/)
+  assert.match(code, /targetScope\.startsWith\(`\$\{accountId\}:`\)/)
   // The drop paints the folder it would file into.
   assert.match(code, /data-dsm-drop': folderHover \? 'true' : undefined/)
 })

@@ -3375,12 +3375,22 @@ window.__ModuleLoader__.load({
               folderId = hit.getAttribute('data-dsm-folder-id')
             }
           }
+          // A row in another folder of the same workspace cannot take a reorder
+          // (folder order is per folder), so dropping on it files the session into
+          // that row's folder instead of silently doing nothing.
+          const targetScope = pointerGesture.targetScope
+          const crossFolder = hasRowTarget && typeof targetScope === 'string' && targetScope !== pointerGesture.scope
+            && typeof accountId === 'string' && targetScope.startsWith(`${accountId}:`)
+          if (crossFolder) {
+            const targetFolder = targetScope.slice(accountId.length + 1)
+            folderId = targetFolder === '' ? null : targetFolder
+          }
           pointerGesture.folderId = null
           onFolderOver?.(null)
           // Filing into a folder is a drop on the folder, not a reorder: only when
           // the pointer never marked a row, so the two gestures cannot fight.
           // A multi-selection files as a whole, so a row target cannot veto it.
-          if (active && (bulkMulti || !hasRowTarget) && folderId !== null && onAssignFolder !== undefined) {
+          if (active && (bulkMulti || !hasRowTarget || crossFolder) && folderId !== null && onAssignFolder !== undefined) {
             pointerGesture.kind = null
             pointerGesture.active = false
             pointerGesture.moved = true
@@ -4264,7 +4274,7 @@ window.__ModuleLoader__.load({
         renameSession, forkSession, insertSessionBefore, insertWorkspaceBefore, copyText,
         pickDirectory, createWorkspace, searchSessions, searchResultLimit, useNotice, clearNotice,
         setPriority, setPriorities, priorityStore, folderStore, folderActions, watchRows,
-        autoArchiveStore, setAutoArchive, archiveMany, setTakeover, reportNotice,
+        autoArchiveStore, setAutoArchive, archiveMany, setTakeover, reportNotice, pinSessionAsync, unpinSessionAsync,
       } = props
 
       const list = useSessions(snapshot => snapshot)
@@ -4437,15 +4447,27 @@ window.__ModuleLoader__.load({
           return
         }
         setPinPlan(desired)
+        // The Host has no move for pins, so a reorder is unpin + re-pin. Each write
+        // is awaited; if one fails, every session this plan unpinned and did not
+        // re-pin is pinned back (in its original order), so a failure can shuffle
+        // the block but never drop a pin.
+        const unpin = typeof unpinSessionAsync === 'function' ? unpinSessionAsync : unpinSession
+        const pin = typeof pinSessionAsync === 'function' ? pinSessionAsync : pinSession
+        const unpinned = []
+        const repinned = new Set()
         try {
-          for (const id of plan.toUnpin) await unpinSession(id)
-          for (const id of plan.toPin) await pinSession(id)
+          for (const id of plan.toUnpin) { await unpin(id); unpinned.push(id) }
+          for (const id of plan.toPin) { await pin(id); repinned.add(id) }
         } catch (error) {
+          const missing = order.filter(id => unpinned.includes(id) && !repinned.has(id))
+          for (const id of [...missing].reverse()) {
+            try { await pin(id) } catch { /* reported below */ }
+          }
           reportFailure(error)
         } finally {
           setPinPlan(null)
         }
-      }, [archivedSet, pinSession, reportFailure, t, unpinSession])
+      }, [archivedSet, pinSession, pinSessionAsync, reportFailure, t, unpinSession, unpinSessionAsync])
 
       const move = useCallback((accountId, order, sessionId, direction) => {
         if (accountId === PINNED_KEY) {
@@ -5852,6 +5874,10 @@ window.__ModuleLoader__.load({
             startSession: workspaceId => ctx.uiWorkspace.startSession(workspaceId),
             pinSession: sessionId => invoke(() => ctx.uiWorkspace.pinSession(sessionId)),
             unpinSession: sessionId => invoke(() => ctx.uiWorkspace.unpinSession(sessionId)),
+            // Awaitable variants for the pinned-block reorder, which has to know
+            // whether each write landed so it can put back what it took away.
+            pinSessionAsync: sessionId => Promise.resolve().then(() => ctx.uiWorkspace.pinSession(sessionId)),
+            unpinSessionAsync: sessionId => Promise.resolve().then(() => ctx.uiWorkspace.unpinSession(sessionId)),
             archiveSession: sessionId => invoke(() => ctx.uiWorkspace.archiveSession(sessionId)),
             setAutoArchive: days => autoArchive.set(readAutoArchive({ days })),
           setTakeover: next => takeover.set({ mode: next ? 'on' : 'off' }),

@@ -2051,3 +2051,31 @@ test('a running subagent in the left list opens through its parent address', () 
   assert.equal(JSON.stringify(applied.calls.filter(call => call[0] === 'openSession').at(-1)),
     JSON.stringify(['openSession', { parentSessionId: 'w1-a', childSessionId: 'child', mode: 'continuable' }]))
 })
+
+test('a pinned reorder that fails half-way pins back what it took away', async () => {
+  const applied = applyPlugin()
+  const region = renderRegion(applied)
+  const pinned = ['p1', 'p2', 'p3']
+  for (const id of pinned) region.data.list.byId[id] = { id, displayTitle: id, running: false, blank: false, retainedBy: { mainView: 0 }, updatedAt: 1 }
+  region.data.workspaces.pinnedSessionIds = [...pinned]
+  region.data.workspaces.items[0].sessionIds.push(...pinned)
+  const writes = []
+  let failed = false
+  region.props.unpinSessionAsync = async (id) => { writes.push(['unpin', id]) }
+  region.props.pinSessionAsync = async (id) => {
+    writes.push(['pin', id])
+    // The first re-pin of the plan fails.
+    if (!failed) { failed = true; throw new Error('pin refused') }
+  }
+  const tree = region.render().tree
+  const source = rowsOf(tree).find(row => row.props['data-dsm-session'] === 'p3')
+  source.props.onPointerDown(pointerEvent())
+  source.props.onPointerMove(pointerEvent({ clientY: 4, target: rowElement('p1') }))
+  rowsOf(region.render().tree).find(row => row.props['data-dsm-session'] === 'p3').props.onPointerUp(pointerEvent())
+  for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve))
+  const unpinned = writes.filter(([kind]) => kind === 'unpin').map(([, id]) => id)
+  const repinned = writes.filter(([kind]) => kind === 'pin').slice(1).map(([, id]) => id)
+  // Everything the plan unpinned is pinned again after the failure.
+  for (const id of unpinned) assert.ok(repinned.includes(id), `${id} is pinned back`)
+  assert.ok(unpinned.length > 0)
+})
