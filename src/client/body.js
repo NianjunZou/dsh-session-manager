@@ -556,8 +556,6 @@ const zh = {
   'sa.duration.hours': '{hours}小时{minutes}分{seconds}秒',
   'sa.duration.days': '{days}天{hours}小时',
   'ws.label': '工作区：{name}',
-  'ws.reveal': '点击在左侧列表中定位',
-  'ws.revealLabel': '在左侧列表中定位，工作区 {name}',
   'copy.name': '名称',
   'copy.id': 'ID',
   'copy.nameTitle': '复制子会话名称：{value}',
@@ -728,8 +726,6 @@ const en = {
   'sa.duration.hours': '{hours}h {minutes}m {seconds}s',
   'sa.duration.days': '{days}d {hours}h',
   'ws.label': 'Workspace: {name}',
-  'ws.reveal': 'Click to show it in the list',
-  'ws.revealLabel': 'Show in the list, workspace {name}',
   'copy.name': 'Name',
   'copy.id': 'ID',
   'copy.nameTitle': 'Copy subagent name: {value}',
@@ -1070,8 +1066,7 @@ const css = `
 .dsm-sa-notice[data-error="true"]{color:var(--dsw-alias-state-error-primary)}
 .dsm-sa-retry{padding:3px 5px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:inherit;font:inherit;cursor:pointer}
 @container (max-width:460px){.dsm-sa-count{display:none}.dsm-sa-trigger{width:28px;height:28px;padding:0;justify-content:center}.dsm-sa-trigger-icon>svg:first-child{display:block}.dsm-sa-trigger-icon>:not(:first-child){position:absolute;right:-3px;top:-3px;transform:scale(.6)}.dsm-model-badge-name,.dsm-ws-badge-name{display:none}}
-.dsm-ws-badge{display:inline-flex;align-items:center;gap:4px;max-width:200px;min-width:0;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
-.dsm-ws-badge:hover,.dsm-ws-badge:focus-visible{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover,color-mix(in srgb,currentColor 8%,transparent));outline:none}
+.dsm-ws-badge{display:inline-flex;align-items:center;gap:4px;max-width:200px;min-width:0;padding:0 2px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;cursor:default}
 .dsm-ws-badge-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsm-model-badge{display:inline-flex;align-items:center;gap:5px;max-width:260px;min-width:0;padding:0 2px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .dsm-model-badge-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1376,7 +1371,7 @@ function SessionRow({
   workspaceLabel, workspaceHint, snippet, titleMatch, canReorder = false, priority, flat = false,
   pinnedSection = false, selectable = false, selected = false, onToggleSelect, toggleLabel,
   groupedByPriority = false, folderOptions, scope, onFolderOver, onAssignFolder, bulkMulti = false,
-  stacked = false, model, subagents = NO_SUBAGENTS, registerRow,
+  stacked = false, model, subagents = NO_SUBAGENTS,
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [subsOpen, setSubsOpen] = useState(false)
@@ -1469,7 +1464,6 @@ function SessionRow({
   }, priority.toUpperCase())
   const hasSub = workspaceNode !== null || snippetNode !== null
   const row = h('div', {
-    ref: registerRow === undefined ? undefined : (element) => registerRow(sessionId, element),
     className: 'dsm-row',
     'data-priority': priority,
     role: 'treeitem',
@@ -2348,12 +2342,13 @@ function SubagentLineage(props) {
 
 /**
  * The workspace the current session belongs to (a subagent shows its root's),
- * at the head of the header actions. Clicking it shows the session in the
- * left list; the tooltip carries the workspace path.
- * @param {object} props - session-scoped slot props plus `workspaceList` and `revealSession`.
+ * at the head of the header actions. Passive text like the preset label next
+ * to it: a hover fill on this one item alone read as "this does something".
+ * The tooltip carries the workspace path.
+ * @param {object} props - session-scoped slot props plus `workspaceList`.
  * @returns {object|null}
  */
-function SessionWorkspaceBadge({ sessionId, useSessions, useWorkspaces, workspaceList, revealSession, t }) {
+function SessionWorkspaceBadge({ sessionId, useSessions, useWorkspaces, workspaceList, t }) {
   const list = useSessions(snapshot => snapshot)
   const fromHook = typeof useWorkspaces === 'function' ? useWorkspaces(snapshot => snapshot) : undefined
   const fromStore = useSyncExternalStore(
@@ -2364,14 +2359,10 @@ function SessionWorkspaceBadge({ sessionId, useSessions, useWorkspaces, workspac
   const workspace = useMemo(() => workspaceForSession(list, items, sessionId), [list, items, sessionId])
   if (!workspace) return null
   const label = workspace.title || workspaceLabelOf(workspace.path)
-  const tip = [t('ws.label', { name: label }), workspace.path, t('ws.reveal')].filter(Boolean).join('\n')
-  return h('button', {
-    type: 'button',
+  return h('span', {
     className: 'dsm-ws-badge',
-    title: tip,
-    'aria-label': t('ws.revealLabel', { name: label }),
+    title: [t('ws.label', { name: label }), workspace.path].filter(Boolean).join('\n'),
     'data-dsm-session-workspace': workspace.workspaceId,
-    onClick: (event) => { event.stopPropagation(); revealSession?.({ workspaceId: workspace.workspaceId, sessionId }) },
   },
   h(IconFolderCloseRegular, { size: 14 }),
   h('span', { className: 'dsm-ws-badge-name' }, label))
@@ -2435,7 +2426,7 @@ function SessionManagerRegion(props) {
     renameSession, forkSession, insertSessionBefore, insertWorkspaceBefore, copyText,
     pickDirectory, createWorkspace, searchSessions, searchResultLimit, useNotice, clearNotice,
     setPriority, setPriorities, priorityStore, folderStore, folderActions, watchRows,
-    autoArchiveStore, setAutoArchive, archiveMany, setTakeover, reportNotice, revealSource,
+    autoArchiveStore, setAutoArchive, archiveMany, setTakeover, reportNotice,
   } = props
 
   const list = useSessions(snapshot => snapshot)
@@ -3025,13 +3016,6 @@ function SessionManagerRegion(props) {
     return cache
   }, [folderEntries, folderReadonly, workspaceMembers])
 
-  // Row elements by session id, so a header "show in list" can scroll to one
-  // without querying host DOM.
-  const rowElements = useMemo(() => new Map(), [])
-  const registerRow = useCallback((id, element) => {
-    if (element) rowElements.set(id, element)
-    else rowElements.delete(id)
-  }, [rowElements])
   const renderRow = useCallback((sessionId, accountId, accountOrder, layout = {}) => {
     const {
       flat = false, pinnedSection = false,
@@ -3069,7 +3053,6 @@ function SessionManagerRegion(props) {
       bulkMulti,
       model: modelIndex.get(sessionId),
       subagents: subagentIndex.get(sessionId),
-      registerRow,
       onDragStart: setDrag,
       // `dragover` fires continuously: only a *changed* cell may re-render.
       // A pointer stream is continuous: only a *changed* cell may re-render.
@@ -3101,7 +3084,7 @@ function SessionManagerRegion(props) {
   // `priorities` belongs here: without it the memoised renderer kept writing the
   // labels it saw when it was created, so a new P1–P4 choice only showed up after
   // something else rebuilt the rows.
-  }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder, modelIndex, registerRow, subagentIndex,
+  }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder, modelIndex, subagentIndex,
     handleDragEnd, handleDragOverMulti, handleDragOverRow, handleFolderOver, handleToggleSelect, move, open,
     pinnedSet, priorities, selectAction, statusCache, statusOfId, t, workspaceLabelBySession, workspaceOf])
 
@@ -3340,19 +3323,6 @@ function SessionManagerRegion(props) {
 
   const viewKey = searching ? 'search' : attentionOnly ? 'attention' : priorityView ? 'priority' : 'tree'
   const bodyRef = useRef(null)
-  useEffect(() => {
-    if (!revealSource) return undefined
-    return revealSource.subscribe(() => {
-      const target = revealSource.getSnapshot()
-      if (!target) return
-      setQuery('')
-      setPriorityView(false)
-      setProjectsCollapsed(false)
-      if (typeof target.workspaceId === 'string') setCollapsed(state => ({ ...state, [target.workspaceId]: false }))
-      expandSidebar?.()
-      window.setTimeout(() => rowElements.get(target.sessionId)?.scrollIntoView?.({ block: 'nearest' }), 60)
-    })
-  }, [revealSource, rowElements])
   useEffect(() => {
     const host = bodyRef.current
     if (!host) return
@@ -3878,8 +3848,6 @@ function apply(ctx) {
   const folders = folderStore(require)
   const autoArchive = autoArchiveStore(require)
   const takeover = takeoverStore(require)
-  // One-shot request from the header workspace label to show a session in the list.
-  const reveal = observable(null)
   // The host half has no injected `t`: bind the namespace once so failure
   // notices follow the active language instead of always speaking Chinese.
   const hostT = ctx.locale.bind(NS)
@@ -4084,7 +4052,6 @@ function apply(ctx) {
           priorities.set(next)
         },
         hooks: { notice: noticeSource, jobs: jobsSource },
-        revealSource: reveal,
       }),
     }, SessionManagerRegion)
 
@@ -4208,7 +4175,6 @@ function apply(ctx) {
         getSnapshot: () => ctx.workspaces.list.getSnapshot(),
         subscribe: listener => ctx.workspaces.list.subscribe(listener),
       },
-      revealSession: target => reveal.set({ ...target, at: Date.now() }),
     }),
   }, SessionWorkspaceBadge]])), 'dsh-session-manager: session workspace')
   ctx.effect(() => ctx.slots.inject('conversation.session.header.actions', () => tryRegister('session model', [[{

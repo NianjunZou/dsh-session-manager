@@ -1967,7 +1967,7 @@ test('a child session gets the switcher and its own model badge', () => {
   assert.equal(applied.react.render(badge.Component, slotProps(applied, data, { sessionId: 'w1-b' })).tree, null)
 })
 
-test('the header names the session workspace, a subagent its root workspace, and a click reveals it', () => {
+test('the header names the session workspace as passive text, a subagent its root workspace', () => {
   const applied = applyPlugin()
   const data = subagentFixture()
   const badge = applied.registrations.find(entry => entry.options.id === 'dsh-session-manager-workspace')
@@ -1978,19 +1978,13 @@ test('the header names the session workspace, a subagent its root workspace, and
   // whose methods depend on `this`.
   const fallback = applied.react.render(badge.Component, slotProps(applied, data, { sessionId: 'child', ...face })).tree
   assert.ok(textsOf(fallback).includes('alpha'), 'the Host workspace source is read bound')
-  const reveals = []
-  const props = slotProps(applied, data, {
-    sessionId: 'child',
-    useWorkspaces: selector => selector(data.workspaces),
-    ...face,
-    revealSession: target => { reveals.push(target); face.revealSession(target) },
-  })
+  const props = slotProps(applied, data, { sessionId: 'child', useWorkspaces: selector => selector(data.workspaces), ...face })
   const tree = applied.react.render(badge.Component, props).tree
   assert.ok(textsOf(tree).includes('alpha'), 'a subagent shows its root session workspace')
   assert.match(tree.props.title, /\/tmp\/alpha/)
-  tree.props.onClick({ stopPropagation() {} })
-  assert.equal(JSON.stringify(reveals), JSON.stringify([{ workspaceId: 'w1', sessionId: 'child' }]))
-  assert.equal(applied.injected.revealSource.getSnapshot().workspaceId, 'w1', 'the list receives the request')
+  // Like the preset label beside it: not a button, nothing to click.
+  assert.equal(tree.type, 'span')
+  assert.equal(tree.props.onClick, undefined)
   const orphan = applied.react.render(badge.Component, { ...props, sessionId: 'nowhere' }).tree
   assert.equal(orphan, null, 'no badge for a session outside every workspace')
 })
