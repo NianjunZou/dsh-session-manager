@@ -1390,56 +1390,122 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Every subagent under the root of `sessionId`'s lineage, depth-first in
-     * catalog order, so a view of one family reads the same from the root and
-     * from any child.
+     * One parent's subagent catalog as the dropdown shows it: the Host's
+     * `subagentCatalog` projection in creation order, with each child's live run
+     * state (session status first, then the list row). The load state follows the
+     * native catalog: a projection that already carries a catalog counts as ready.
      *
      * @param {any} list - `sessions.list` snapshot.
-     * @param {string} sessionId - any session of the family.
-     * @returns {Array<object>} {@link subagentEntries} rows plus `depth` (1 = direct child).
+     * @param {Map<string, {running?: boolean}>|undefined} statuses - session status map.
+     * @param {string} parentId - parent session id.
+     * @returns {{state: string, error?: any, entries: Array<object>}|undefined}
      */
-    function lineageSubagents(list, sessionId) {
-      const children = buildChildren(list)
-      const parentOf = new Map()
-      for (const [parent, ids] of children) for (const id of ids) if (!parentOf.has(id)) parentOf.set(id, parent)
-      let root = sessionId
-      for (let hops = 0; parentOf.has(root) && hops < MAX_DEPTH; hops += 1) root = parentOf.get(root)
-      const out = []
-      const seen = new Set([root])
-      const walk = (parentId, depth) => {
-        if (depth > MAX_DEPTH) return
-        for (const entry of subagentEntries(list, children, parentId)) {
-          if (seen.has(entry.id)) continue
-          seen.add(entry.id)
-          out.push({ ...entry, depth })
-          walk(entry.id, depth + 1)
-        }
-      }
-      walk(root, 1)
-      return out
+    function catalogOf(list, statuses, parentId) {
+      const snapshot = list?.projectionsBySession?.[parentId]
+      if (snapshot === undefined) return undefined
+      const projected = snapshot.values?.subagentCatalog
+      const state = snapshot.state === 'idle'
+        ? (projected === undefined ? 'idle' : 'ready')
+        : (snapshot.state === 'migration-required' && projected !== undefined ? 'ready' : (snapshot.state ?? 'ready'))
+      const entries = (Array.isArray(projected) ? projected : [])
+        .filter(entry => entry && typeof entry.id === 'string')
+        .map((entry) => {
+          const running = (statuses?.get?.(entry.id)?.running ?? list?.byId?.[entry.id]?.running) === true
+          return { ...entry, activity: running ? 'running' : 'inactive' }
+        })
+      return { state, ...(snapshot.error ? { error: snapshot.error } : {}), entries }
     }
 
     /**
-     * Group subagent rows by `model · effort`, keeping first-appearance order of
-     * both groups and members: a family that runs on one model reads as one line
-     * instead of the same model repeated per child.
-     *
-     * @param {Array<{model?: {model: string, effort?: string}}>} rows - subagent rows.
-     * @returns {Array<{key: string, model?: string, effort?: string, entries: object[]}>}
+     * The name unique among a row's siblings: the delegation name for continuable
+     * and external children, the session id for the rest (same rule as the
+     * native dropdown).
+     * @param {{id: string, mode?: string, name?: string}} entry - catalog entry.
+     * @returns {string} the name.
      */
-    function modelGroups(rows) {
-      const groups = new Map()
-      for (const row of rows) {
-        const key = row.model === undefined ? '' : `${row.model.model}\u0000${row.model.effort ?? ''}`
-        let group = groups.get(key)
-        if (!group) {
-          group = { key, entries: [], ...(row.model === undefined ? {} : { model: row.model.model }), ...(row.model?.effort === undefined ? {} : { effort: row.model.effort }) }
-          groups.set(key, group)
-        }
-        group.entries.push(row)
+    function entryName(entry) {
+      return entry.mode === 'continuable' || entry.mode === 'external' ? (entry.name || entry.id) : entry.id
+    }
+
+    /**
+     * Whether a child's last closed turn completed normally.
+     * @param {{mode?: string, activity?: string}} entry - catalog entry with activity.
+     * @param {any} summary - the child's `sessions.list.byId` row.
+     * @returns {boolean}
+     */
+    function completedEntry(entry, summary) {
+      return entry.mode !== 'external' && entry.activity === 'inactive'
+        && summary?.projectionValues?.subagentTiming?.lastTurnCompleted === true
+    }
+
+    /**
+     * Total tokens a session used, from its `tokenUsage` projection.
+     * @param {any} usage - `projectionValues.tokenUsage`.
+     * @returns {number|undefined}
+     */
+    function tokenTotal(usage) {
+      if (!usage || typeof usage !== 'object') return undefined
+      const parts = [usage.uncachedInputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens]
+      if (parts.every(value => typeof value !== 'number')) return undefined
+      return parts.reduce((sum, value) => sum + (typeof value === 'number' ? value : 0), 0)
+    }
+
+    /**
+     * Compact token count: `950`, `12.1K`, `48.1M` (one decimal under 100).
+     * @param {number} value - token count.
+     * @returns {string}
+     */
+    function formatTokenCount(value) {
+      const scaled = (n) => (n < 100 ? (Math.round(n * 10) / 10).toFixed(1).replace(/\.0$/, '') : String(Math.round(n)))
+      if (value < 1000) return String(value)
+      if (value < 1_000_000) return `${scaled(value / 1000)}K`
+      return `${scaled(value / 1_000_000)}M`
+    }
+
+    /**
+     * Whole active-turn time of a child, from its `subagentTiming` projection; an
+     * open turn counts up to `now` while the child runs.
+     * @param {any} summary - the child's `sessions.list.byId` row.
+     * @param {boolean} running - whether the child runs now.
+     * @param {number} now - epoch milliseconds.
+     * @returns {number|undefined} milliseconds.
+     */
+    function activeDurationMs(summary, running, now) {
+      const timing = summary?.projectionValues?.subagentTiming
+      if (!timing || typeof timing.settledMs !== 'number') return undefined
+      if (!timing.active) return timing.settledMs
+      const end = running ? now : timing.active.through
+      return timing.settledMs + Math.max(0, end - timing.active.since)
+    }
+
+    /**
+     * Split a duration for display.
+     * @param {number} ms - milliseconds.
+     * @returns {{days: number, hours: number, minutes: number, seconds: number}}
+     */
+    function durationParts(ms) {
+      const total = Math.floor(Math.max(0, ms) / 1000)
+      return {
+        days: Math.floor(total / 86400),
+        hours: Math.floor(total / 3600) % 24,
+        minutes: Math.floor(total / 60) % 60,
+        seconds: total % 60,
       }
-      // An unknown model says the least, so it goes last.
-      return [...groups.values()].sort((a, b) => (a.key === '' ? 1 : 0) - (b.key === '' ? 1 : 0))
+    }
+
+    /**
+     * The direct parent of a session in the subagent tree, from the parent's
+     * catalog first and the child's own row second.
+     * @param {any} list - `sessions.list` snapshot.
+     * @param {string} sessionId - session id.
+     * @returns {string|undefined}
+     */
+    function subagentParentOf(list, sessionId) {
+      for (const [parentId, snapshot] of Object.entries(list?.projectionsBySession || {})) {
+        if (snapshot?.values?.subagentCatalog?.some?.(entry => entry?.id === sessionId)) return parentId
+      }
+      const row = list?.byId?.[sessionId]
+      return row?.origin === 'subagent' && typeof row.parentId === 'string' ? row.parentId : undefined
     }
 
     /**
@@ -2184,15 +2250,36 @@ window.__ModuleLoader__.load({
       'status.question': '等待回答',
       'status.running': '正在执行',
       'status.subagents': '{n} 个子会话执行中',
-      'subagents.toggle': '子会话：{running} 个执行中 / 共 {n} 个',
+      'subagents.toggle': '{running} 个子会话执行中',
       'subagents.list': '子会话',
       'subagents.modelUnknown': '模型未知',
       'subagents.running': '执行中',
       'hover.model': '模型：{model}',
-      'lineage.models': '子会话模型与思考强度',
-      'lineage.head': '子会话模型 · {n} 个',
-      'lineage.count': '{n} 个',
       'effort.default': '默认强度',
+      'sa.count': '{n} 个子智能体',
+      'sa.countRunning': '{n} 个子智能体，{running} 个正在运行',
+      'sa.switcher': '切换子智能体：{title}',
+      'sa.tree': '子智能体会话',
+      'sa.loading': '正在加载子智能体…',
+      'sa.idle': '尚未加载子智能体',
+      'sa.loadError': '无法加载子智能体',
+      'sa.retry': '重试',
+      'sa.mode.external': '外部任务',
+      'sa.mode.oneShot': '一次性',
+      'sa.mode.continuable': '可继续',
+      'sa.mode.unknown': '模式未知',
+      'sa.activity.running': '正在运行',
+      'sa.activity.completed': '已完成',
+      'sa.activity.inactive': '当前未运行',
+      'sa.expand': '展开 {label} 的下级子智能体',
+      'sa.collapse': '收起 {label} 的下级子智能体',
+      'sa.openAside': '在侧边栏打开',
+      'sa.openAsideLabel': '在侧边栏打开 {label}',
+      'sa.tokens': '{value} tok',
+      'sa.duration.seconds': '{seconds}秒',
+      'sa.duration.minutes': '{minutes}分{seconds}秒',
+      'sa.duration.hours': '{hours}小时{minutes}分{seconds}秒',
+      'sa.duration.days': '{days}天{hours}小时',
       'copy.name': '名称',
       'copy.id': 'ID',
       'copy.nameTitle': '复制子会话名称：{value}',
@@ -2332,15 +2419,36 @@ window.__ModuleLoader__.load({
       'status.question': 'Waiting for an answer',
       'status.running': 'Running',
       'status.subagents': '{n} subagent(s) running',
-      'subagents.toggle': 'Subagents: {running} running of {n}',
+      'subagents.toggle': '{running} subagent(s) running',
       'subagents.list': 'Subagents',
       'subagents.modelUnknown': 'model unknown',
       'subagents.running': 'running',
       'hover.model': 'Model: {model}',
-      'lineage.models': 'Subagent models and reasoning effort',
-      'lineage.head': 'Subagent models · {n}',
-      'lineage.count': '{n}',
       'effort.default': 'default effort',
+      'sa.count': '{n} subagents',
+      'sa.countRunning': '{n} subagents, {running} running',
+      'sa.switcher': 'Switch subagent: {title}',
+      'sa.tree': 'Subagent sessions',
+      'sa.loading': 'Loading subagents…',
+      'sa.idle': 'Subagents not loaded yet',
+      'sa.loadError': 'Unable to load subagents',
+      'sa.retry': 'Retry',
+      'sa.mode.external': 'external',
+      'sa.mode.oneShot': 'one-shot',
+      'sa.mode.continuable': 'continuable',
+      'sa.mode.unknown': 'mode unknown',
+      'sa.activity.running': 'running',
+      'sa.activity.completed': 'completed',
+      'sa.activity.inactive': 'not running',
+      'sa.expand': 'Expand subagents of {label}',
+      'sa.collapse': 'Collapse subagents of {label}',
+      'sa.openAside': 'Open in sidebar',
+      'sa.openAsideLabel': 'Open {label} in sidebar',
+      'sa.tokens': '{value} tok',
+      'sa.duration.seconds': '{seconds}s',
+      'sa.duration.minutes': '{minutes}m {seconds}s',
+      'sa.duration.hours': '{hours}h {minutes}m {seconds}s',
+      'sa.duration.days': '{days}d {hours}h',
       'copy.name': 'Name',
       'copy.id': 'ID',
       'copy.nameTitle': 'Copy subagent name: {value}',
@@ -2637,28 +2745,55 @@ window.__ModuleLoader__.load({
     .dsm-sub[data-running="true"] .dsm-sub-dot{background:var(--dsw-alias-state-business-primary)}
     .dsm-sub-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .dsm-sub-model{flex:none;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
-    .dsm-lineage-models{display:flex;flex-direction:column;gap:6px;margin:4px 0 0;padding:8px 10px 6px;border-top:1px solid var(--dsw-alias-border-l2)}
-    .dsm-lineage-head{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
-    .dsm-lineage-group{display:flex;flex-direction:column;gap:4px}
-    .dsm-lineage-modelline{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;font-size:12px;line-height:18px}
-    .dsm-lineage-model{color:var(--dsw-alias-label-primary);word-break:break-all;font-variant-numeric:tabular-nums}
-    .dsm-lineage-model[data-unknown="true"]{color:var(--dsw-alias-label-tertiary)}
-    .dsm-effort{padding:0 5px;border-radius:var(--dsw-radius-xs);font-size:11px;line-height:16px;color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb,currentColor 16%,transparent)}
+    .dsm-sa-root{position:relative;display:inline-flex;align-items:center;gap:10px;min-width:0}
+    .dsm-sa-root-switcher{margin-left:6px}
+    .dsm-sa-trigger,.dsm-sa-switcher{display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:3px 2px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
+    .dsm-sa-trigger:hover,.dsm-sa-trigger:focus-visible{color:var(--dsw-alias-label-primary);outline:none}
+    .dsm-sa-trigger-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px}
+    .dsm-sa-switcher{min-width:0;max-width:244px;font-size:14px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-primary)}
+    .dsm-sa-switcher[data-ancestor="true"]{font-weight:400;color:var(--dsw-alias-label-tertiary)}
+    .dsm-sa-switcher-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dsm-sa-panel{position:fixed;z-index:100;box-sizing:border-box;display:flex;flex-direction:column;padding:6px;overflow:hidden;border-radius:var(--dsw-radius-xl,12px);border:0.5px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1));box-shadow:var(--dsw-elevation-prominent);outline:none}
+    .dsm-sa-body{display:flex;flex-direction:column;min-height:0;overflow:auto}
+    .dsm-sa-node{position:relative;min-width:0}
+    .dsm-sa-row{position:relative;display:flex;align-items:flex-start;gap:4px;width:100%;box-sizing:border-box;padding:0 2px;border-radius:var(--dsw-radius-md);color:var(--dsw-alias-label-primary);font-size:12px;line-height:17px;cursor:pointer;outline:none}
+    .dsm-sa-row[aria-disabled="true"]{cursor:default}
+    .dsm-sa-click{display:flex;flex:1;align-items:flex-start;gap:7px;min-width:0;padding:5px 6px;border-radius:var(--dsw-radius-md)}
+    .dsm-sa-row:hover>.dsm-sa-click,.dsm-sa-row:focus-visible>.dsm-sa-click{background:var(--dsw-alias-interactive-bg-hover,color-mix(in srgb,currentColor 8%,transparent))}
+    .dsm-sa-dot{display:inline-flex;flex:none;align-items:center;justify-content:center;width:14px;height:17px}
+    .dsm-sa-disclosure,.dsm-sa-disclosure-space{flex:none;width:14px;height:27px}
+    .dsm-sa-disclosure{display:inline-flex;align-items:center;justify-content:center;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer}
+    .dsm-sa-disclosure svg{transition:transform 120ms ease}
+    .dsm-sa-disclosure[data-open="true"] svg{transform:rotate(90deg)}
+    .dsm-sa-content{display:flex;flex:1;flex-direction:column;gap:1px;min-width:0}
+    .dsm-sa-label{font-size:13px;overflow-wrap:anywhere}
+    .dsm-sa-label[data-current="true"]{font-weight:500}
+    .dsm-sa-meta{color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere}
+    .dsm-sa-model{display:flex;align-items:center;gap:5px;min-width:0;margin-top:1px}
+    .dsm-sa-model-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-size:11px;font-variant-numeric:tabular-nums}
+    .dsm-sa-model-name[data-unknown="true"]{color:var(--dsw-alias-label-tertiary)}
+    .dsm-sa-copies{display:none;gap:2px;margin-left:auto;flex:none}
+    .dsm-sa-row:hover .dsm-sa-copies,.dsm-sa-row:focus-within .dsm-sa-copies{display:inline-flex}
+    .dsm-sa-metrics{display:grid;grid-template-rows:17px 15px;flex:none;color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:15px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+    .dsm-sa-metrics>span:first-child{line-height:17px}
+    .dsm-sa-side{box-sizing:border-box;flex:none;width:28px;height:28px;margin:-1px -4px 0 0}
+    .dsm-sa-side[data-current="true"]{display:grid;place-items:center;color:var(--dsw-alias-label-primary)}
+    .dsm-sa-aside{display:inline-flex;align-items:center;justify-content:center;padding:6px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer}
+    .dsm-sa-aside:hover,.dsm-sa-aside:focus-visible{background:var(--dsw-alias-interactive-bg-hover,color-mix(in srgb,currentColor 10%,transparent));color:var(--dsw-alias-label-primary);outline:none}
+    .dsm-sa-children{position:relative;margin-left:16px;padding-left:3px;border-left:0.5px solid var(--dsw-alias-border-l3,var(--dsw-alias-border-l2))}
+    .dsm-sa-notice{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
+    .dsm-sa-notice[data-error="true"]{color:var(--dsw-alias-state-error-primary)}
+    .dsm-sa-retry{padding:3px 5px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:inherit;font:inherit;cursor:pointer}
+    .dsm-model-badge{display:inline-flex;align-items:center;gap:5px;max-width:260px;min-width:0;padding:0 2px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
+    .dsm-model-badge-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dsm-effort{padding:0 5px;border-radius:var(--dsw-radius-xs);font-size:11px;line-height:16px;color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb,currentColor 16%,transparent);flex:none;white-space:nowrap}
     .dsm-effort[data-default="true"]{color:var(--dsw-alias-label-tertiary)}
-    .dsm-lineage-count{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-tertiary)}
-    .dsm-chips{display:flex;flex-wrap:wrap;gap:4px}
-    .dsm-chip{display:inline-flex;align-items:stretch;max-width:100%;border-radius:var(--dsw-radius-xs);background:color-mix(in srgb,var(--dsw-alias-label-primary) 8%,transparent)}
-    .dsm-chip .dsm-copy{font-size:11px;line-height:18px;padding:0 6px}
-    .dsm-chip .dsm-copy[data-part="name"]{color:var(--dsw-alias-label-secondary);max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsw-font-mono,ui-monospace,monospace)}
-    .dsm-chip .dsm-copy[data-part="id"]{padding:0 5px;border-left:1px solid var(--dsw-alias-border-l2);font-size:10px;opacity:.55}
-    .dsm-chip:hover .dsm-copy[data-part="id"],.dsm-chip:focus-within .dsm-copy[data-part="id"]{opacity:1}
-    .dsm-chip[data-running="true"] .dsm-copy[data-part="name"]{color:var(--dsw-alias-state-business-primary)}
     .dsm-copy{flex:none;padding:0 4px;border:0;border-radius:var(--dsw-radius-xs);font:inherit;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary);background:transparent;cursor:pointer}
     .dsm-sub .dsm-copy{visibility:hidden}
     .dsm-sub:hover .dsm-copy,.dsm-sub:focus-within .dsm-copy{visibility:visible}
     .dsm-copy:hover,.dsm-copy:focus-visible{color:var(--dsw-alias-label-primary);background:color-mix(in srgb,currentColor 12%,transparent);outline:none}
     .dsm-copy[data-state="done"]{color:var(--dsw-alias-state-business-primary)}
-    .dsm-copy[data-state="failed"]{color:var(--dsw-alias-state-error,#d33)}
+    .dsm-copy[data-state="failed"]{color:var(--dsw-alias-state-error-primary)}
     .dsm-time{flex:0 0 4.5em;width:4.5em;margin-left:6px;text-align:right;white-space:nowrap;font-size:10px;line-height:16px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}
     .dsm-action{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:24px;height:20px;flex:0 0 24px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);opacity:0;cursor:pointer;font:inherit;font-size:13px}
     /* Hover hands the trailing cell to the actions, exactly like the shipped rows:
@@ -3021,16 +3156,17 @@ window.__ModuleLoader__.load({
       // hover-only `workspaceHint` fills the line the visible label would have.
       const modelLine = model === undefined ? '' : t('hover.model', { model: modelText(model) })
       const titleNode = h('span', { className: 'dsm-title', title: hoverTitle(title, workspaceLabel ?? workspaceHint, summary, modelLine) }, ...titleParts(title, titleMatch))
-      const subsRunning = subagents.reduce((n, entry) => n + (entry.running ? 1 : 0), 0)
-      const subsNode = subagents.length === 0 ? null : h('button', {
+      // Only children that run now: the history lives in the header dropdown.
+      const runningSubagents = subagents.filter(entry => entry.running)
+      const subsNode = runningSubagents.length === 0 ? null : h('button', {
         type: 'button',
         className: 'dsm-subs',
-        'data-running': String(subsRunning > 0),
+        'data-running': 'true',
         'aria-expanded': String(subsOpen),
-        title: t('subagents.toggle', { running: subsRunning, n: subagents.length }),
-        'aria-label': t('subagents.toggle', { running: subsRunning, n: subagents.length }),
+        title: t('subagents.toggle', { running: runningSubagents.length }),
+        'aria-label': t('subagents.toggle', { running: runningSubagents.length }),
         onClick: (event) => { event.stopPropagation(); setSubsOpen(value => !value) },
-      }, subsRunning > 0 ? `${subsRunning}/${subagents.length}` : String(subagents.length))
+      }, String(runningSubagents.length))
       const workspaceNode = workspaceLabel === undefined ? null : h('span', { className: 'dsm-workspace' }, workspaceLabel)
       const snippetNode = snippet === undefined || snippet === '' ? null : h('span', { className: 'dsm-snippet', title: snippet }, snippet)
       const pinnedNode = pinned && !archived && !pinnedSection
@@ -3221,8 +3357,8 @@ window.__ModuleLoader__.load({
         portal: true,
       }),
       )
-      if (!subsOpen || subagents.length === 0) return row
-      return h(React.Fragment, null, row, h(SubagentList, { entries: subagents, currentId, onOpen, t }))
+      if (!subsOpen || runningSubagents.length === 0) return row
+      return h(React.Fragment, null, row, h(SubagentList, { entries: runningSubagents, currentId, onOpen, t }))
     }
 
     // Rows are pure views over stable props: memoising them means a drop marker or a
@@ -3531,51 +3667,405 @@ window.__ModuleLoader__.load({
      * @returns {object} the toggle.
      */
     /**
-     * Footer of the native subagent lineage dropdown. The dropdown rows already
-     * name each child, so this block does not list them again: it groups the
-     * family by `model · effort` (usually one line), and under each group shows
-     * the children's short names as chips. A chip copies the name; its `ID` end
-     * copies the session id. The Host offers no per-row slot in the dropdown.
-     *
-     * @param {object} props - session-scoped slot props (`sessionId`, `useSessions`, `t`).
-     * @returns {object|null} the block, or nothing for a session without subagents.
+     * Duration text in the native dropdown's shape: `38分33秒`, `2小时14分03秒`, `3天4小时`.
+     * @param {number} ms - milliseconds.
+     * @param {Function} t - translator.
+     * @returns {string}
      */
-    function LineageModelFooter({ sessionId, useSessions, t }) {
-      const list = useSessions(snapshot => snapshot)
-      const rows = useMemo(() => (typeof sessionId === 'string' ? lineageSubagents(list, sessionId) : []), [list, sessionId])
-      const groups = useMemo(() => modelGroups(rows), [rows])
-      if (rows.length === 0) return null
-      return h('div', { className: 'dsm-lineage-models', role: 'group', 'aria-label': t('lineage.models') },
-        h('div', { className: 'dsm-lineage-head' }, t('lineage.head', { n: rows.length })),
-        groups.map(group => h('div', { key: group.key || 'unknown', className: 'dsm-lineage-group' },
-          h('div', { className: 'dsm-lineage-modelline' },
-            h('span', { className: 'dsm-lineage-model', 'data-unknown': String(group.model === undefined) },
-              group.model ?? t('subagents.modelUnknown')),
-            group.model === undefined ? null
-              : h('span', { className: 'dsm-effort', 'data-default': String(group.effort === undefined) },
-                group.effort ?? t('effort.default')),
-            h('span', { className: 'dsm-lineage-count' }, t('lineage.count', { n: group.entries.length }))),
-          h('div', { className: 'dsm-chips' },
-            group.entries.map(entry => h(SubagentChip, { key: entry.id, entry, t }))))))
+    function formatDuration(ms, t) {
+      const { days, hours, minutes, seconds } = durationParts(ms)
+      const pad = value => String(value).padStart(2, '0')
+      if (days > 0) return t('sa.duration.days', { days, hours })
+      if (hours > 0) return t('sa.duration.hours', { hours, minutes: pad(minutes), seconds: pad(seconds) })
+      if (minutes > 0) return t('sa.duration.minutes', { minutes, seconds: pad(seconds) })
+      return t('sa.duration.seconds', { seconds })
     }
 
     /**
-     * One child as a compact chip: the short name copies the name, the `ID` end
-     * copies the session id. The full label rides the tooltip.
-     *
-     * @param {object} props - `entry`, `t`.
-     * @returns {object} the chip.
+     * Re-render once a second while `active`, for running children's clocks.
+     * @param {boolean} active - whether anything is running.
+     * @returns {number} the current time.
      */
-    function SubagentChip({ entry, t }) {
-      const name = entry.name || entry.label
-      return h('span', {
-        className: 'dsm-chip',
-        'data-running': String(entry.running),
-        'data-dsm-subagent': entry.id,
-        title: entry.name ? `${entry.label}\n${entry.name}` : entry.label,
+    function useTicker(active) {
+      const [now, setNow] = useState(() => Date.now())
+      useEffect(() => {
+        if (!active) return undefined
+        const timer = window.setInterval(() => setNow(Date.now()), 1000)
+        return () => window.clearInterval(timer)
+      }, [active])
+      return now
+    }
+
+    /**
+     * One level of the subagent tree. Each row: status, label, `name · mode ·
+     * activity`, `model · effort`, tokens and active time; on hover, copy name and
+     * copy id; at the end, open in the sidebar (or the current-row check).
+     *
+     * @param {object} props - level data and actions.
+     * @returns {object} the rows.
+     */
+    function SubagentRows(props) {
+      const {
+        parentId, currentId, list, statuses, expanded, level, actions, t, onToggle, onClose,
+      } = props
+      const catalog = catalogOf(list, statuses, parentId) ?? { state: 'idle', entries: [] }
+      const now = useTicker(catalog.entries.some(entry => entry.activity === 'running'))
+      const canExpand = entry => entry.mode !== 'external' && (catalogOf(list, statuses, entry.id)?.entries.length ?? 0) > 0
+      const reserveDisclosure = catalog.entries.some(canExpand)
+      const notice = catalog.entries.length > 0 ? null
+        : catalog.state === 'loading' ? h('div', { className: 'dsm-sa-notice' }, t('sa.loading'))
+          : catalog.state === 'error' ? h('div', { className: 'dsm-sa-notice', 'data-error': 'true' },
+            h('span', null, catalog.error?.message ?? t('sa.loadError')),
+            h('button', { type: 'button', className: 'dsm-sa-retry', onClick: () => actions.prepare(parentId) }, t('sa.retry')))
+            : catalog.state === 'idle' ? h('div', { className: 'dsm-sa-notice' }, t('sa.idle')) : null
+      return h(React.Fragment, null, notice, catalog.entries.map((entry) => {
+        const external = entry.mode === 'external'
+        const summary = list?.byId?.[entry.id]
+        const label = entry.label || summary?.title || entryName(entry)
+        const name = entryName(entry)
+        const current = entry.id === currentId
+        const expandable = canExpand(entry)
+        const open = expandable && expanded.has(entry.id)
+        const completed = completedEntry(entry, summary)
+        const mode = external ? t('sa.mode.external') : entry.mode === 'one-shot' ? t('sa.mode.oneShot')
+          : entry.mode === 'continuable' ? t('sa.mode.continuable') : t('sa.mode.unknown')
+        const activity = external ? undefined
+          : entry.activity === 'running' ? t('sa.activity.running') : completed ? t('sa.activity.completed') : t('sa.activity.inactive')
+        const model = modelSelectionOf(list, entry.id)
+        const tokens = tokenTotal(summary?.projectionValues?.tokenUsage)
+        const duration = activeDurationMs(summary, entry.activity === 'running', now)
+        const address = { parentSessionId: parentId, childSessionId: entry.id, mode: entry.mode }
+        const registerRow = (element) => {
+          if (element) props.rowRegistry.set(entry.id, element)
+          else props.rowRegistry.delete(entry.id)
+        }
+        const openChild = () => { if (external) return; actions.open(address); onClose() }
+        return h('div', { key: entry.id, className: 'dsm-sa-node' },
+          h('div', {
+            ref: external ? undefined : registerRow,
+            className: 'dsm-sa-row',
+            role: 'treeitem',
+            tabIndex: external ? -1 : 0,
+            'aria-level': level,
+            'aria-disabled': external || undefined,
+            'aria-current': current || undefined,
+            ...(expandable ? { 'aria-expanded': open } : {}),
+            'data-dsm-subagent': entry.id,
+            onClick: openChild,
+            onKeyDown: (event) => {
+              if (event.target !== event.currentTarget) return
+              if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); openChild() }
+              else if ((event.key === 'ArrowRight' && expandable && !open) || (event.key === 'ArrowLeft' && open)) {
+                event.preventDefault(); event.stopPropagation(); onToggle(entry.id)
+              }
+            },
+          },
+          expandable
+            ? h('button', {
+              type: 'button',
+              tabIndex: -1,
+              className: 'dsm-sa-disclosure',
+              'data-open': String(open),
+              'aria-label': t(open ? 'sa.collapse' : 'sa.expand', { label }),
+              onClick: (event) => { event.preventDefault(); event.stopPropagation(); onToggle(entry.id) },
+            }, h(IconChevronRightOutlineRegular, { size: 12 }))
+            : reserveDisclosure ? h('span', { className: 'dsm-sa-disclosure-space' }) : null,
+          h('div', { className: 'dsm-sa-click' },
+            h('span', { className: 'dsm-sa-dot' },
+              h(StateDot, { state: entry.activity === 'running' ? 'ongoing' : completed ? 'done' : 'idle' })),
+            h('span', { className: 'dsm-sa-content' },
+              h('span', { className: 'dsm-sa-label', 'data-current': String(current) }, label),
+              h('span', { className: 'dsm-sa-meta' }, [name, mode, activity].filter(Boolean).join(' · ')),
+              h('span', { className: 'dsm-sa-model' },
+                model === undefined
+                  ? h('span', { className: 'dsm-sa-model-name', 'data-unknown': 'true' }, t('subagents.modelUnknown'))
+                  : h(React.Fragment, null,
+                    h('span', { className: 'dsm-sa-model-name', title: `${model.provider}/${model.model}` }, model.model),
+                    h('span', { className: 'dsm-effort', 'data-default': String(model.effort === undefined) }, model.effort ?? t('effort.default'))),
+                h('span', { className: 'dsm-sa-copies' },
+                  h(CopyChip, { value: name, label: t('copy.name'), title: t('copy.nameTitle', { value: name }), t }),
+                  h(CopyChip, { value: entry.id, label: t('copy.id'), title: t('copy.idTitle', { value: entry.id }), t })))),
+            tokens === undefined && duration === undefined ? null : h('span', { className: 'dsm-sa-metrics' },
+              h('span', null, tokens === undefined ? '' : t('sa.tokens', { value: formatTokenCount(tokens) })),
+              h('span', null, duration === undefined ? '' : formatDuration(duration, t))),
+            current
+              ? h('span', { className: 'dsm-sa-side', 'data-current': 'true', 'aria-hidden': 'true' }, h(IconCheckOutlineRegular, { size: 16 }))
+              : external || actions.openAside === undefined ? h('span', { className: 'dsm-sa-side' })
+                : h('button', {
+                  type: 'button',
+                  className: 'dsm-sa-side dsm-sa-aside',
+                  title: t('sa.openAside'),
+                  'aria-label': t('sa.openAsideLabel', { label }),
+                  onClick: (event) => { event.preventDefault(); event.stopPropagation(); actions.openAside(address); onClose() },
+                  onKeyDown: (event) => { event.stopPropagation() },
+                }, h(IconChevronRightOutlineRegular, { size: 16 })))),
+          open ? h('div', { className: 'dsm-sa-children', role: 'group' },
+            h(SubagentRows, { ...props, parentId: entry.id, level: level + 1 })) : null)
+      }))
+    }
+
+    /**
+     * The subagent dropdown: a trigger (a count on a root session, the current
+     * child's title on a child) and a tree panel over the catalog rooted at
+     * `rootId`. Replaces the native catalog so every row can carry the model.
+     *
+     * @param {object} props - `rootId`, `currentId`, `variant`, `title`, `openTitle`,
+     * `useSessions`, `useSessionStatus`, `actions`, `t`, `footer`.
+     * @returns {object|null}
+     */
+    function SubagentDropdown({ rootId, currentId, variant, title, openTitle, useSessions, useSessionStatus, actions, t, footer, keepEmpty = false }) {
+      const list = useSessions(snapshot => snapshot)
+      const statuses = useSessionStatus ? useSessionStatus(value => value) : undefined
+      const [open, setOpen] = useState(false)
+      const [expanded, setExpanded] = useState(() => new Set())
+      const [place, setPlace] = useState(null)
+      const triggerRef = useRef(null)
+      const panelRef = useRef(null)
+      const pinned = useRef(false)
+      const timers = useRef({ open: 0, close: 0 })
+      // Rows register their element by id; focus order is document order.
+      const rowRegistry = useMemo(() => new Map(), [])
+      const focusableRows = () => [...rowRegistry.values()].sort((a, b) => (
+        typeof a.compareDocumentPosition === 'function' && (a.compareDocumentPosition(b) & 4) ? -1 : 1))
+      const catalog = catalogOf(list, statuses, rootId)
+      const entries = catalog?.entries ?? []
+      const running = entries.filter(entry => entry.activity === 'running').length
+      const currentEntry = currentId === undefined ? undefined : entries.find(entry => entry.id === currentId)
+      const switcherTitle = currentEntry ? (currentEntry.label || entryName(currentEntry)) : title
+      const visible = variant === 'switcher' || keepEmpty || entries.length > 0 || catalog?.state === 'error'
+
+      const timerBag = () => (timers.current ??= { open: 0, close: 0 })
+      const clearTimers = () => {
+        window.clearTimeout(timerBag().open)
+        window.clearTimeout(timerBag().close)
+      }
+      const measure = () => {
+        const rect = triggerRef.current?.getBoundingClientRect?.()
+        // Without a measurable trigger (it is unmounting) the panel opens at the
+        // window inset rather than not at all.
+        if (!rect) return { top: 16, left: 16, width: 380, maxHeight: 560 }
+        const width = Math.min(380, window.innerWidth - 32)
+        const left = Math.max(16, Math.min(rect.left, window.innerWidth - width - 16))
+        const below = window.innerHeight - rect.bottom - 16
+        return below >= 240
+          ? { top: rect.bottom + 5, left, width, maxHeight: Math.min(560, below) }
+          : { bottom: window.innerHeight - rect.top + 5, left, width, maxHeight: Math.min(560, rect.top - 16) }
+      }
+      const change = (next, restoreFocus = false) => {
+        clearTimers()
+        if (next) {
+          setPlace(measure())
+          setOpen(true)
+          actions.prepare(rootId)
+        } else {
+          pinned.current = false
+          setOpen(false)
+          setExpanded(new Set())
+          if (restoreFocus) queueMicrotask(() => triggerRef.current?.focus?.())
+        }
+      }
+      const hoverOpen = () => {
+        clearTimers()
+        if (open) return
+        timerBag().open = window.setTimeout(() => change(true), 150)
+      }
+      const hoverClose = () => {
+        clearTimers()
+        if (pinned.current) return
+        timerBag().close = window.setTimeout(() => change(false), 120)
+      }
+      const toggleBranch = (id) => {
+        setExpanded((current) => {
+          const next = new Set(current)
+          if (next.has(id)) next.delete(id); else { next.add(id); actions.prepare(id) }
+          return next
+        })
+      }
+
+      useEffect(() => {
+        if (!open) return undefined
+        const outside = (event) => {
+          if (triggerRef.current?.contains?.(event.target) || panelRef.current?.contains?.(event.target)) return
+          change(false)
+        }
+        const escape = (event) => { if (event.key === 'Escape') { event.preventDefault(); change(false, true) } }
+        const reflow = () => setPlace(measure())
+        document.addEventListener('pointerdown', outside)
+        document.addEventListener('keydown', escape)
+        window.addEventListener('resize', reflow)
+        return () => {
+          document.removeEventListener('pointerdown', outside)
+          document.removeEventListener('keydown', escape)
+          window.removeEventListener('resize', reflow)
+        }
+      }, [open])
+      useEffect(() => () => clearTimers(), [])
+      useEffect(() => { if (!visible && open) change(false) }, [visible, open])
+
+      if (!visible) return null
+
+      const focusAt = (index) => {
+        const items = focusableRows()
+        if (items.length > 0) items[(index + items.length) % items.length]?.focus?.()
+      }
+      const navigate = (event) => {
+        const items = focusableRows()
+        const index = items.indexOf(document.activeElement)
+        if (event.key === 'ArrowDown') { event.preventDefault(); focusAt(index + 1) }
+        else if (event.key === 'ArrowUp') { event.preventDefault(); focusAt(index < 0 ? items.length - 1 : index - 1) }
+        else if (event.key === 'Home') { event.preventDefault(); focusAt(0) }
+        else if (event.key === 'End') { event.preventDefault(); focusAt(items.length - 1) }
+      }
+      const countLabel = t('sa.count', { n: entries.length })
+      const trigger = h('button', {
+        ref: triggerRef,
+        type: 'button',
+        className: variant === 'switcher' ? 'dsm-sa-switcher' : 'dsm-sa-trigger',
+        'data-ancestor': String(variant === 'switcher' && openTitle !== undefined),
+        'aria-haspopup': 'dialog',
+        'aria-expanded': String(open),
+        'aria-label': variant === 'switcher' ? t('sa.switcher', { title: switcherTitle }) : (running > 0 ? t('sa.countRunning', { n: entries.length, running }) : countLabel),
+        title: variant === 'switcher' ? undefined : countLabel,
+        onPointerEnter: (event) => { if (event.pointerType !== 'touch') hoverOpen() },
+        onClick: () => {
+          if (openTitle !== undefined) { change(false); openTitle(); return }
+          if (open && pinned.current) { change(false, true); return }
+          pinned.current = true
+          if (!open) change(true)
+          queueMicrotask(() => panelRef.current?.focus?.())
+        },
+        onKeyDown: (event) => {
+          if (event.key !== 'ArrowDown') return
+          event.preventDefault()
+          pinned.current = true
+          if (!open) change(true)
+          queueMicrotask(() => focusAt(0))
+        },
+      }, variant === 'switcher'
+        ? [h('span', { key: 'title', className: 'dsm-sa-switcher-title' }, switcherTitle), h(IconChevronsUpDownOutlineRegular, { key: 'icon', size: 14 })]
+        : [h('span', { key: 'icon', className: 'dsm-sa-trigger-icon' },
+          running > 0 ? h(StateDot, { state: 'ongoing' }) : h(IconQueueOutlineRegular, { size: 14 })),
+        h('span', { key: 'count', className: 'dsm-sa-count' }, countLabel)])
+
+      const panel = open && place !== null ? h('div', {
+        ref: panelRef,
+        className: 'dsm-sa-panel',
+        role: 'dialog',
+        tabIndex: -1,
+        'aria-label': t('sa.tree'),
+        'data-dsm-subagent-panel': 'true',
+        style: {
+          ...(place.top !== undefined ? { top: `${place.top}px` } : { bottom: `${place.bottom}px` }),
+          left: `${place.left}px`,
+          width: `${place.width}px`,
+          maxHeight: `${place.maxHeight}px`,
+        },
+        onPointerEnter: (event) => { if (event.pointerType !== 'touch') clearTimers() },
+        onPointerLeave: hoverClose,
+        onKeyDown: navigate,
       },
-      h(CopyChip, { value: name, label: name, title: t('copy.nameTitle', { value: name }), t, part: 'name' }),
-      h(CopyChip, { value: entry.id, label: t('copy.id'), title: t('copy.idTitle', { value: entry.id }), t, part: 'id' }))
+      h('div', { className: 'dsm-sa-body' },
+        h('div', { role: 'tree', 'aria-label': t('sa.tree') },
+          h(SubagentRows, {
+            parentId: rootId, currentId, list, statuses, expanded, level: 1, actions, t, rowRegistry,
+            onToggle: toggleBranch, onClose: () => change(false),
+          })),
+        footer ?? null)) : null
+
+      return h('div', {
+        className: variant === 'switcher' ? 'dsm-sa-root dsm-sa-root-switcher' : 'dsm-sa-root',
+        'data-dsm-subagent-action': 'true',
+        onPointerLeave: hoverClose,
+      }, trigger, panel === null ? null : portal(panel))
+    }
+
+    /**
+     * Portal a node to `document.body`, falling back to inline rendering where
+     * the DOM renderer is unavailable.
+     * @param {object} node - the element.
+     * @returns {object}
+     */
+    function portal(node) {
+      try {
+        const { createPortal } = require('react-dom')
+        return typeof createPortal === 'function' && typeof document !== 'undefined' && document.body ? createPortal(node, document.body) : node
+      } catch {
+        return node
+      }
+    }
+
+    /**
+     * Header action for a root session: the subagent count and its dropdown.
+     * Child sessions render nothing here — their lineage switcher owns it.
+     * @param {object} props - session-scoped slot props plus `actions`.
+     * @returns {object|null}
+     */
+    function RootSubagentAction(props) {
+      const { sessionId, useSession, useSessions, useSessionStatus, useProjection, actions, renderSlot, hooks, t } = props
+      const addressed = useSession ? useSession(snapshot => snapshot?.subagent != null) : false
+      const listedChild = useSessions(state => state?.byId?.[sessionId]?.origin === 'subagent')
+      const footerAvailable = hooks?.footerAvailable ? useSyncExternalStore(hooks.footerAvailable.subscribe, hooks.footerAvailable.getSnapshot) : false
+      const teamTasks = useProjection ? useProjection('agentTeam', team => team?.enabled === true && (team.tasks || []).some(task => task.status !== 'deleted')) : false
+      const teamFailure = useProjection ? useProjection('agentTeam', team => team?.enabled === true && team.failure !== undefined) : false
+      if (addressed || listedChild) return null
+      const footer = footerAvailable && typeof renderSlot === 'function'
+        ? renderSlot('conversation.session.header.actions.subagent.footer', {})
+        : null
+      return h(SubagentDropdown, {
+        key: sessionId,
+        rootId: sessionId,
+        variant: 'count',
+        useSessions,
+        useSessionStatus,
+        actions,
+        t,
+        footer,
+        keepEmpty: footerAvailable && (teamTasks === true || teamFailure === true),
+      })
+    }
+
+    /**
+     * Breadcrumb lineage for a child session: a switcher over its siblings and a
+     * count over its own children. Root sessions render nothing.
+     * @param {object} props - lineage slot props plus `actions`.
+     * @returns {object|null}
+     */
+    function SubagentLineage(props) {
+      const { lineageSessionId, displayTitle, openTitle, useSession, useSessions, useSessionStatus, actions, t } = props
+      const address = useSession ? useSession(snapshot => snapshot?.subagent?.address) : undefined
+      const parentId = useSessions(state => (address?.childSessionId === lineageSessionId ? address.parentSessionId : subagentParentOf(state, lineageSessionId)))
+      if (parentId === undefined) return null
+      const shared = { useSessions, useSessionStatus, actions, t }
+      return h(React.Fragment, null,
+        h(SubagentDropdown, {
+          key: `switcher:${lineageSessionId}`,
+          rootId: parentId,
+          currentId: lineageSessionId,
+          variant: 'switcher',
+          title: displayTitle,
+          ...(openTitle === undefined ? {} : { openTitle }),
+          ...shared,
+        }),
+        openTitle === undefined ? h(SubagentDropdown, { key: `children:${lineageSessionId}`, rootId: lineageSessionId, variant: 'count', ...shared }) : null)
+    }
+
+    /**
+     * The model and reasoning effort the current session runs on, beside the
+     * header actions. Hidden while the Host has not recorded a selection.
+     * @param {object} props - session-scoped slot props.
+     * @returns {object|null}
+     */
+    function SessionModelBadge({ sessionId, useSessions, t }) {
+      const model = useSessions(state => modelSelectionOf(state, sessionId), (a, b) => modelText(a) === modelText(b))
+      if (model === undefined) return null
+      const text = modelText(model)
+      return h('span', {
+        className: 'dsm-model-badge',
+        title: t('hover.model', { model: `${model.provider}/${text}` }),
+        'data-dsm-session-model': sessionId,
+      },
+      h('span', { className: 'dsm-model-badge-name' }, model.model),
+      h('span', { className: 'dsm-effort', 'data-default': String(model.effort === undefined) }, model.effort ?? t('effort.default')))
     }
 
     function TakeoverFooterAction({ takeover, setTakeover, t }) {
@@ -5282,22 +5772,80 @@ window.__ModuleLoader__.load({
         }
       }, 'dsh-session-manager: takeover toggle')
 
-      // Model and effort under the native subagent dropdown. It does not depend on
-      // the takeover state: the dropdown is the Host's, not the region's.
-      ctx.effect(() => {
-        try {
-          return ctx.slots.inject('conversation.session.header.actions.subagent.footer', () => ctx.slots.register({
-            name: 'conversation.session.header.actions.subagent.footer',
-            id: 'dsh-session-manager-lineage-models',
-            order: 100,
-            locale: NS,
-            registrant: '@pianner/dsh-session-manager',
-          }, LineageModelFooter))
-        } catch (error) {
-          console.warn('[dsh-session-manager] subagent footer unavailable', error)
-          return undefined
+      // The subagent dropdown, rebuilt so each row carries its model and effort:
+      // the root-session count in the header actions and the child-session
+      // breadcrumb switcher both shadow the native seats by id/priority. A
+      // registration the Host rejects leaves the native dropdown in place.
+      const subagentActions = {
+        open: address => ctx.uiWorkspace.openSession(address),
+        openAside: (address) => {
+          const sidebar = ctx.get('sidebarRight')
+          if (typeof sidebar?.openResource !== 'function') return
+          const query = new URLSearchParams({ parent: address.parentSessionId, mode: address.mode })
+          sidebar.openResource(`dsh-resource://subagentchat/session/${encodeURIComponent(address.childSessionId)}?${query}`, {
+            kind: 'subagentchat',
+            preferNewPane: true,
+          })
+        },
+        prepare: (parentId) => {
+          Promise.resolve().then(async () => {
+            await ctx.sessions.refreshProjections?.(parentId)
+            const parent = ctx.sessions.list?.getSnapshot?.()?.projectionsBySession?.[parentId]
+            if (parent?.state !== 'ready') return
+            for (const entry of parent.values?.subagentCatalog ?? []) {
+              if (entry.mode === 'external') continue
+              const state = ctx.sessions.list.getSnapshot()
+              const childState = state.projectionsBySession?.[entry.id]?.state
+              if (state.byId?.[entry.id]?.formatStatus === 'migration-required' || childState === 'migration-required' || childState === 'error') continue
+              await ctx.sessions.refreshProjections?.(entry.id)
+            }
+          }).catch(error => console.warn('[dsh-session-manager] subagent catalog refresh failed', error))
+        },
+      }
+      const FOOTER = 'conversation.session.header.actions.subagent.footer'
+      const footerAvailable = {
+        getSnapshot: () => (ctx.slots.entries?.(FOOTER)?.length ?? 0) > 0,
+        subscribe: listener => (typeof ctx.slots.subscribe === 'function' ? ctx.slots.subscribe(FOOTER, listener) : () => {}),
+      }
+      const tryRegister = (label, variants) => {
+        for (const [options, Component] of variants) {
+          try { return ctx.slots.register(options, Component) } catch (error) {
+            console.warn(`[dsh-session-manager] ${label} registration rejected`, error)
+          }
         }
-      }, 'dsh-session-manager: subagent models')
+        return undefined
+      }
+      ctx.effect(() => ctx.slots.inject('conversation.session.header.actions', () => {
+        const base = {
+          name: 'conversation.session.header.actions',
+          id: 'subagent-catalog',
+          priority: SLOT_PRIORITY,
+          order: 10,
+          locale: NS,
+          registrant: '@pianner/dsh-session-manager',
+          inject: () => ({ actions: subagentActions, hooks: { footerAvailable } }),
+        }
+        // The agent-team task board renders into the footer seat the native
+        // catalog declares; declaring it here keeps that board visible.
+        return tryRegister('subagent catalog', [
+          [{ ...base, children: { [FOOTER]: { kind: 'list', scope: 'session' } } }, RootSubagentAction],
+          [base, RootSubagentAction],
+        ])
+      }), 'dsh-session-manager: subagent catalog')
+      ctx.effect(() => ctx.slots.inject('conversation.session.header.lineage', () => tryRegister('subagent lineage', [[{
+        name: 'conversation.session.header.lineage',
+        priority: SLOT_PRIORITY,
+        locale: NS,
+        registrant: '@pianner/dsh-session-manager',
+        inject: () => ({ actions: subagentActions }),
+      }, SubagentLineage]])), 'dsh-session-manager: subagent lineage')
+      ctx.effect(() => ctx.slots.inject('conversation.session.header.actions', () => tryRegister('session model', [[{
+        name: 'conversation.session.header.actions',
+        id: 'dsh-session-manager-model',
+        order: 11,
+        locale: NS,
+        registrant: '@pianner/dsh-session-manager',
+      }, SessionModelBadge]])), 'dsh-session-manager: session model')
     }
 
     module.exports = { inject, apply }

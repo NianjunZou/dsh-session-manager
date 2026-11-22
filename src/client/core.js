@@ -1376,56 +1376,122 @@ export function subagentEntries(list, children, parentId) {
 }
 
 /**
- * Every subagent under the root of `sessionId`'s lineage, depth-first in
- * catalog order, so a view of one family reads the same from the root and
- * from any child.
+ * One parent's subagent catalog as the dropdown shows it: the Host's
+ * `subagentCatalog` projection in creation order, with each child's live run
+ * state (session status first, then the list row). The load state follows the
+ * native catalog: a projection that already carries a catalog counts as ready.
  *
  * @param {any} list - `sessions.list` snapshot.
- * @param {string} sessionId - any session of the family.
- * @returns {Array<object>} {@link subagentEntries} rows plus `depth` (1 = direct child).
+ * @param {Map<string, {running?: boolean}>|undefined} statuses - session status map.
+ * @param {string} parentId - parent session id.
+ * @returns {{state: string, error?: any, entries: Array<object>}|undefined}
  */
-export function lineageSubagents(list, sessionId) {
-  const children = buildChildren(list)
-  const parentOf = new Map()
-  for (const [parent, ids] of children) for (const id of ids) if (!parentOf.has(id)) parentOf.set(id, parent)
-  let root = sessionId
-  for (let hops = 0; parentOf.has(root) && hops < MAX_DEPTH; hops += 1) root = parentOf.get(root)
-  const out = []
-  const seen = new Set([root])
-  const walk = (parentId, depth) => {
-    if (depth > MAX_DEPTH) return
-    for (const entry of subagentEntries(list, children, parentId)) {
-      if (seen.has(entry.id)) continue
-      seen.add(entry.id)
-      out.push({ ...entry, depth })
-      walk(entry.id, depth + 1)
-    }
-  }
-  walk(root, 1)
-  return out
+export function catalogOf(list, statuses, parentId) {
+  const snapshot = list?.projectionsBySession?.[parentId]
+  if (snapshot === undefined) return undefined
+  const projected = snapshot.values?.subagentCatalog
+  const state = snapshot.state === 'idle'
+    ? (projected === undefined ? 'idle' : 'ready')
+    : (snapshot.state === 'migration-required' && projected !== undefined ? 'ready' : (snapshot.state ?? 'ready'))
+  const entries = (Array.isArray(projected) ? projected : [])
+    .filter(entry => entry && typeof entry.id === 'string')
+    .map((entry) => {
+      const running = (statuses?.get?.(entry.id)?.running ?? list?.byId?.[entry.id]?.running) === true
+      return { ...entry, activity: running ? 'running' : 'inactive' }
+    })
+  return { state, ...(snapshot.error ? { error: snapshot.error } : {}), entries }
 }
 
 /**
- * Group subagent rows by `model · effort`, keeping first-appearance order of
- * both groups and members: a family that runs on one model reads as one line
- * instead of the same model repeated per child.
- *
- * @param {Array<{model?: {model: string, effort?: string}}>} rows - subagent rows.
- * @returns {Array<{key: string, model?: string, effort?: string, entries: object[]}>}
+ * The name unique among a row's siblings: the delegation name for continuable
+ * and external children, the session id for the rest (same rule as the
+ * native dropdown).
+ * @param {{id: string, mode?: string, name?: string}} entry - catalog entry.
+ * @returns {string} the name.
  */
-export function modelGroups(rows) {
-  const groups = new Map()
-  for (const row of rows) {
-    const key = row.model === undefined ? '' : `${row.model.model}\u0000${row.model.effort ?? ''}`
-    let group = groups.get(key)
-    if (!group) {
-      group = { key, entries: [], ...(row.model === undefined ? {} : { model: row.model.model }), ...(row.model?.effort === undefined ? {} : { effort: row.model.effort }) }
-      groups.set(key, group)
-    }
-    group.entries.push(row)
+export function entryName(entry) {
+  return entry.mode === 'continuable' || entry.mode === 'external' ? (entry.name || entry.id) : entry.id
+}
+
+/**
+ * Whether a child's last closed turn completed normally.
+ * @param {{mode?: string, activity?: string}} entry - catalog entry with activity.
+ * @param {any} summary - the child's `sessions.list.byId` row.
+ * @returns {boolean}
+ */
+export function completedEntry(entry, summary) {
+  return entry.mode !== 'external' && entry.activity === 'inactive'
+    && summary?.projectionValues?.subagentTiming?.lastTurnCompleted === true
+}
+
+/**
+ * Total tokens a session used, from its `tokenUsage` projection.
+ * @param {any} usage - `projectionValues.tokenUsage`.
+ * @returns {number|undefined}
+ */
+export function tokenTotal(usage) {
+  if (!usage || typeof usage !== 'object') return undefined
+  const parts = [usage.uncachedInputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens]
+  if (parts.every(value => typeof value !== 'number')) return undefined
+  return parts.reduce((sum, value) => sum + (typeof value === 'number' ? value : 0), 0)
+}
+
+/**
+ * Compact token count: `950`, `12.1K`, `48.1M` (one decimal under 100).
+ * @param {number} value - token count.
+ * @returns {string}
+ */
+export function formatTokenCount(value) {
+  const scaled = (n) => (n < 100 ? (Math.round(n * 10) / 10).toFixed(1).replace(/\.0$/, '') : String(Math.round(n)))
+  if (value < 1000) return String(value)
+  if (value < 1_000_000) return `${scaled(value / 1000)}K`
+  return `${scaled(value / 1_000_000)}M`
+}
+
+/**
+ * Whole active-turn time of a child, from its `subagentTiming` projection; an
+ * open turn counts up to `now` while the child runs.
+ * @param {any} summary - the child's `sessions.list.byId` row.
+ * @param {boolean} running - whether the child runs now.
+ * @param {number} now - epoch milliseconds.
+ * @returns {number|undefined} milliseconds.
+ */
+export function activeDurationMs(summary, running, now) {
+  const timing = summary?.projectionValues?.subagentTiming
+  if (!timing || typeof timing.settledMs !== 'number') return undefined
+  if (!timing.active) return timing.settledMs
+  const end = running ? now : timing.active.through
+  return timing.settledMs + Math.max(0, end - timing.active.since)
+}
+
+/**
+ * Split a duration for display.
+ * @param {number} ms - milliseconds.
+ * @returns {{days: number, hours: number, minutes: number, seconds: number}}
+ */
+export function durationParts(ms) {
+  const total = Math.floor(Math.max(0, ms) / 1000)
+  return {
+    days: Math.floor(total / 86400),
+    hours: Math.floor(total / 3600) % 24,
+    minutes: Math.floor(total / 60) % 60,
+    seconds: total % 60,
   }
-  // An unknown model says the least, so it goes last.
-  return [...groups.values()].sort((a, b) => (a.key === '' ? 1 : 0) - (b.key === '' ? 1 : 0))
+}
+
+/**
+ * The direct parent of a session in the subagent tree, from the parent's
+ * catalog first and the child's own row second.
+ * @param {any} list - `sessions.list` snapshot.
+ * @param {string} sessionId - session id.
+ * @returns {string|undefined}
+ */
+export function subagentParentOf(list, sessionId) {
+  for (const [parentId, snapshot] of Object.entries(list?.projectionsBySession || {})) {
+    if (snapshot?.values?.subagentCatalog?.some?.(entry => entry?.id === sessionId)) return parentId
+  }
+  const row = list?.byId?.[sessionId]
+  return row?.origin === 'subagent' && typeof row.parentId === 'string' ? row.parentId : undefined
 }
 
 /**

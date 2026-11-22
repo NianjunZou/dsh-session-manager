@@ -76,13 +76,10 @@ test('a subagent chip is a labelled toggle and its list is a keyboard-operable g
   assert.match(code, /className: 'dsm-sub',\s+role: 'treeitem',\s+tabIndex: 0/)
 })
 
-test('the lineage footer is a labelled group under the native subagent dropdown', () => {
-  assert.match(code, /name: 'conversation\.session\.header\.actions\.subagent\.footer',\s+id: 'dsh-session-manager-lineage-models'/)
-  assert.match(code, /className: 'dsm-lineage-models', role: 'group', 'aria-label': t\('lineage\.models'\)/)
-})
 
-test('footer chips are real buttons with a name and an id action', () => {
-  assert.match(code, /h\(CopyChip, \{ value: name, label: name, title: t\('copy\.nameTitle'/)
-  assert.match(code, /h\(CopyChip, \{ value: entry\.id, label: t\('copy\.id'\), title: t\('copy\.idTitle'/)
-  assert.match(code, /type: 'button',\s+className: 'dsm-copy'/)
+test('the rebuilt subagent dropdown is a dialog over a keyboard tree', () => {
+  assert.match(code, /role: 'dialog',\s+tabIndex: -1,\s+'aria-label': t\('sa\.tree'\)/)
+  assert.match(code, /h\('div', \{ role: 'tree', 'aria-label': t\('sa\.tree'\) \}/)
+  assert.match(code, /role: 'treeitem',\s+tabIndex: external \? -1 : 0,\s+'aria-level': level/)
+  assert.match(code, /'aria-haspopup': 'dialog',\s+'aria-expanded': String\(open\)/)
 })

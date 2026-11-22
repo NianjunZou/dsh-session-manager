@@ -47,8 +47,13 @@ import {
   modelSelectionOf,
   modelText,
   subagentEntries,
-  lineageSubagents,
-  modelGroups,
+  catalogOf,
+  entryName,
+  tokenTotal,
+  formatTokenCount,
+  activeDurationMs,
+  durationParts,
+  subagentParentOf,
   buildRollup,
   computeGroups,
   descendantsOf,
@@ -1061,51 +1066,48 @@ test('subagentEntries names each child from the catalog and carries its model an
   assert.deepEqual(subagentEntries(list, children, 'k1'), [])
 })
 
-test('lineageSubagents lists the whole family from the root, whichever member asks', () => {
-  const sel = (model, effort) => ({ modelSelection: { lastUsed: { provider: 'p', model, ...(effort ? { reasoningEffort: effort } : {}) } } })
-  const list = {
-    byId: {
-      root: { id: 'root' },
-      a: { id: 'a', parentId: 'root', projectionValues: sel('m-a', 'high') },
-      b: { id: 'b', parentId: 'root', projectionValues: sel('m-b') },
-      a1: { id: 'a1', parentId: 'a', running: true, projectionValues: sel('m-a1', 'low') },
-    },
-    projectionsBySession: {
-      root: { values: { subagentCatalog: [{ id: 'a', label: 'stage a', name: 'stage-a', mode: 'continuable' }, { id: 'b', label: 'stage b', mode: 'one-shot' }] } },
-      a: { values: { subagentCatalog: [{ id: 'a1', label: 'deep', mode: 'one-shot' }] } },
-    },
-  }
-  const shape = rows => rows.map(r => [r.id, r.depth, r.label, r.name, r.model?.model, r.model?.effort])
-  const expected = [
-    ['a', 1, 'stage a', 'stage-a', 'm-a', 'high'],
-    ['a1', 2, 'deep', undefined, 'm-a1', 'low'],
-    ['b', 1, 'stage b', undefined, 'm-b', undefined],
-  ]
-  assert.deepEqual(shape(lineageSubagents(list, 'root')), expected)
-  assert.deepEqual(shape(lineageSubagents(list, 'a1')), expected, 'a child sees the same family')
-  assert.deepEqual(lineageSubagents({ byId: { solo: { id: 'solo' } } }, 'solo'), [])
-})
-
-test('modelGroups folds a family on one model into one group, unknown last', () => {
-  const m = (model, effort) => ({ model, ...(effort ? { effort } : {}) })
-  const rows = [
-    { id: 'a', model: m('flash', 'high') },
-    { id: 'b' },
-    { id: 'c', model: m('flash', 'high') },
-    { id: 'd', model: m('flash') },
-  ]
-  const groups = modelGroups(rows)
-  assert.deepEqual(groups.map(g => [g.model, g.effort, g.entries.map(e => e.id)]), [
-    ['flash', 'high', ['a', 'c']],
-    ['flash', undefined, ['d']],
-    [undefined, undefined, ['b']],
-  ])
-})
-
 test('subagentEntries follows the catalog (creation) order, not the byId order', () => {
   const list = {
     byId: { p: { id: 'p' }, late: { id: 'late', parentId: 'p' }, early: { id: 'early', parentId: 'p' }, stray: { id: 'stray', parentId: 'p' } },
     projectionsBySession: { p: { values: { subagentCatalog: [{ id: 'early', label: 'E', mode: 'one-shot' }, { id: 'late', label: 'L', mode: 'one-shot' }] } } },
   }
   assert.deepEqual(subagentEntries(list, buildChildren(list), 'p').map(e => e.id), ['early', 'late', 'stray'])
+})
+
+test('catalogOf reads the parent catalog in order with live run state', () => {
+  const list = {
+    byId: { a: { id: 'a', running: false }, b: { id: 'b', running: true } },
+    projectionsBySession: { p: { state: 'idle', values: { subagentCatalog: [{ id: 'a', mode: 'one-shot' }, { id: 'b', mode: 'continuable', label: 'B', name: 'bee' }] } } },
+  }
+  const statuses = new Map([['a', { running: true }]])
+  const catalog = catalogOf(list, statuses, 'p')
+  assert.equal(catalog.state, 'ready', 'an idle projection that already has a catalog is ready')
+  assert.deepEqual(catalog.entries.map(e => [e.id, e.activity]), [['a', 'running'], ['b', 'running']])
+  assert.equal(catalogOf(list, undefined, 'missing'), undefined)
+  assert.equal(entryName(catalog.entries[1]), 'bee')
+  assert.equal(entryName(catalog.entries[0]), 'a', 'one-shot children are named by id')
+})
+
+test('token and duration helpers match the native dropdown', () => {
+  assert.equal(tokenTotal({ uncachedInputTokens: 1000, outputTokens: 200, cacheReadTokens: 48_000_000, cacheWriteTokens: 100_000 }), 48_101_200)
+  assert.equal(tokenTotal(undefined), undefined)
+  assert.equal(formatTokenCount(950), '950')
+  assert.equal(formatTokenCount(12_100), '12.1K')
+  assert.equal(formatTokenCount(48_101_200), '48.1M')
+  assert.equal(formatTokenCount(150_000_000), '150M')
+  const summary = { projectionValues: { subagentTiming: { settledMs: 60_000, active: { since: 1_000, through: 4_000 } } } }
+  assert.equal(activeDurationMs(summary, false, 10_000), 63_000)
+  assert.equal(activeDurationMs(summary, true, 10_000), 69_000)
+  assert.equal(activeDurationMs({}, true, 1), undefined)
+  assert.deepEqual(durationParts(2 * 3600_000 + 14 * 60_000 + 3_000), { days: 0, hours: 2, minutes: 14, seconds: 3 })
+})
+
+test('subagentParentOf prefers the parent catalog over the row', () => {
+  const list = {
+    byId: { c: { id: 'c', origin: 'subagent', parentId: 'stale' }, r: { id: 'r' } },
+    projectionsBySession: { p: { values: { subagentCatalog: [{ id: 'c' }] } } },
+  }
+  assert.equal(subagentParentOf(list, 'c'), 'p')
+  assert.equal(subagentParentOf({ byId: list.byId }, 'c'), 'stale')
+  assert.equal(subagentParentOf(list, 'r'), undefined)
 })

@@ -102,7 +102,7 @@ function createReact() {
     },
     useMemo(compute) { return compute() },
     useCallback(fn) { return fn },
-    useRef() { return { current: null } },
+    useRef(initial = null) { return { current: initial } },
     render(Component, props) {
       cursor = 0
       effects = []
@@ -135,6 +135,7 @@ function loadBundle() {
       removeEventListener: (type) => { documentListeners.delete(type) },
     },
     AbortController,
+    queueMicrotask,
     window: {
       setInterval: () => 1,
       clearInterval: () => {},
@@ -1848,70 +1849,109 @@ test('filing a row into a folder keeps that folder other sessions', () => {
   assert.deepEqual(dragging, [])
 })
 
-test('a subagent row and the lineage footer copy the name and the session id', async () => {
-  const applied = applyPlugin()
+
+/** A fixture where w1-a has three subagents, one of them running, each with a model. */
+function subagentFixture() {
   const data = fixtures()
-  data.list.byId.child.projectionValues = {
-    modelSelection: { lastUsed: { provider: 'gateway-a', model: 'DeepSeek-V4.1-Flash', reasoningEffort: 'high' } },
-  }
+  const sel = (model, effort) => ({ modelSelection: { lastUsed: { provider: 'gateway-a', model, ...(effort ? { reasoningEffort: effort } : {}) } } })
+  data.list.byId.child.projectionValues = { ...sel('DeepSeek-V4.1-Flash', 'high'), tokenUsage: { uncachedInputTokens: 1000, outputTokens: 500, cacheReadTokens: 48_000_000, cacheWriteTokens: 0 } }
+  data.list.byId.done = { id: 'done', parentId: 'w1-a', origin: 'subagent', displayTitle: 'Done', running: false, blank: false, retainedBy: { mainView: 0 }, updatedAt: 1, projectionValues: sel('Opus') }
+  data.list.byId.old = { id: 'old', parentId: 'w1-a', origin: 'subagent', displayTitle: 'Old', running: false, blank: false, retainedBy: { mainView: 0 }, updatedAt: 1 }
   data.list.projectionsBySession = {
-    'w1-a': { values: { subagentCatalog: [{ id: 'child', label: 'stage one', name: 'stage-1', mode: 'continuable' }] } },
+    'w1-a': { state: 'ready', values: { subagentCatalog: [
+      { id: 'child', label: 'stage one', name: 'stage-1', mode: 'continuable' },
+      { id: 'done', label: 'stage two', name: 'stage-2', mode: 'continuable' },
+      { id: 'old', mode: 'one-shot' },
+    ] } },
   }
-  const props = {
-    wide: true,
-    expandSidebar: () => {},
-    useSessions: selector => selector(data.list),
-    useWorkspaces: selector => selector(data.workspaces),
+  return data
+}
+
+function slotProps(applied, data, extra = {}) {
+  return {
+    useSessions: (selector) => selector(data.list),
     useSessionStatus: selector => selector(data.statuses),
-    useJobs: selector => selector(data.jobs),
-    useNotice: selector => selector(undefined),
+    useSession: selector => selector({ subagent: null }),
+    useProjection: () => false,
     t: (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key),
-    ...applied.injected,
+    ...extra,
   }
-  const render = () => applied.react.render(applied.registered.Component, props).tree
-  const find = (tree, test) => { const hits = []; walk(tree, node => { if (test(node)) hits.push(node) }); return hits }
-  const event = { stopPropagation() {}, preventDefault() {} }
+}
 
-  // The parent row carries the chip; opening it lists the child with its model.
-  const chip = find(render(), node => node.props?.className === 'dsm-subs')[0]
-  assert.ok(chip, 'w1-a has a subagent chip')
-  chip.props.onClick(event)
-  const listed = find(render(), node => node.props?.className === 'dsm-sub')
-  assert.equal(listed.length, 1)
-  const texts = []
-  walk(listed[0], node => { for (const child of node.props?.children || []) if (typeof child === 'string') texts.push(child) })
-  assert.ok(texts.includes('DeepSeek-V4.1-Flash · high'))
+const textsOf = (node) => {
+  const out = []
+  walk(node, n => { for (const child of n.props?.children || []) if (typeof child === 'string') out.push(child) })
+  return out
+}
+const findAll = (tree, test) => { const hits = []; walk(tree, node => { if (test(node)) hits.push(node) }); return hits }
 
-  // Copying must not open the child: the copy button stops the click.
-  const copies = find(listed[0], node => node.props?.className === 'dsm-copy')
-  assert.deepEqual(copies.map(node => node.props.children[0]), ['copy.name', 'copy.id'])
-  let stopped = 0
-  const counted = { preventDefault() {}, stopPropagation() { stopped += 1 } }
-  copies[0].props.onClick(counted)
-  copies[1].props.onClick(counted)
+test('the left-list chip counts only running subagents', () => {
+  const applied = applyPlugin()
+  const data = subagentFixture()
+  const props = {
+    wide: true, expandSidebar: () => {}, useNotice: selector => selector(undefined),
+    useWorkspaces: selector => selector(data.workspaces), useJobs: selector => selector(data.jobs),
+    ...slotProps(applied, data), ...applied.injected,
+  }
+  const tree = applied.react.render(applied.registered.Component, props).tree
+  const chip = findAll(tree, node => node.props?.className === 'dsm-subs')[0]
+  assert.ok(chip, 'w1-a has a running subagent')
+  assert.deepEqual(chip.props.children, ['1'], 'one running, history not summed')
+  data.list.byId.child.running = false
+  const idle = applied.react.render(applied.registered.Component, props).tree
+  assert.equal(findAll(idle, node => node.props?.className === 'dsm-subs').length, 0, 'no chip when nothing runs')
+})
+
+test('the rebuilt catalog shadows the native seats and shows each child with its model', async () => {
+  const applied = applyPlugin()
+  const data = subagentFixture()
+  const catalog = applied.registrations.find(entry => entry.options.name === 'conversation.session.header.actions' && entry.options.id === 'subagent-catalog')
+  assert.ok(catalog, 'the native catalog id is shadowed')
+  assert.ok(catalog.options.priority < 0, 'with a winning priority')
+  assert.ok(catalog.options.children?.['conversation.session.header.actions.subagent.footer'], 'the team footer seat is kept')
+  const lineage = applied.registrations.find(entry => entry.options.name === 'conversation.session.header.lineage')
+  assert.ok(lineage && lineage.options.priority < 0, 'the lineage switcher is shadowed')
+
+  const props = slotProps(applied, data, { sessionId: 'w1-a', ...catalog.options.inject('w1-a') })
+  const event = { stopPropagation() {}, preventDefault() {}, pointerType: 'mouse' }
+  const trigger = findAll(applied.react.render(catalog.Component, props).tree, node => node.props?.className === 'dsm-sa-trigger')[0]
+  assert.ok(trigger, 'a root session shows the count trigger')
+  trigger.props.onClick(event)
+  const tree = applied.react.render(catalog.Component, props).tree
+  const rows = findAll(tree, node => node.props?.className === 'dsm-sa-row')
+  assert.deepEqual(rows.map(row => row.props['data-dsm-subagent']), ['child', 'done', 'old'], 'catalog order')
+  const first = textsOf(rows[0])
+  for (const want of ['stage one', 'stage-1 · sa.mode.continuable · sa.activity.running', 'DeepSeek-V4.1-Flash', 'high']) assert.ok(first.includes(want), want)
+  assert.ok(first.some(text => text.startsWith('sa.tokens:') && text.includes('48')), 'tokens shown')
+  assert.ok(textsOf(rows[1]).includes('effort.default'), 'a missing effort says default')
+  assert.ok(textsOf(rows[2]).includes('subagents.modelUnknown'))
+
+  // Copy name and id without opening; then open the row as a subagent address.
+  const [copyName, copyId] = findAll(rows[0], node => node.props?.className === 'dsm-copy')
+  copyName.props.onClick(event)
+  copyId.props.onClick(event)
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(applied.clipboardWrites.slice(-2), ['stage-1', 'child'])
-  assert.equal(stopped, 2, 'each copy click stops at the button')
-  assert.ok(!applied.calls.some(call => call[0] === 'openSession' && call[1] === 'child'))
+  assert.ok(!applied.calls.some(call => call[0] === 'openSession'))
+  rows[1].props.onClick(event)
+  assert.equal(JSON.stringify(applied.calls.filter(call => call[0] === 'openSession').at(-1)),
+    JSON.stringify(['openSession', { parentSessionId: 'w1-a', childSessionId: 'done', mode: 'continuable' }]))
+})
 
-  // The native dropdown's footer lists the same child from any family member.
-  const footer = applied.registrations.find(entry => entry.options.name === 'conversation.session.header.actions.subagent.footer')
-  assert.ok(footer, 'footer registered')
-  const block = applied.react.render(footer.Component, { ...props, sessionId: 'child' }).tree
-  // One model line for the family, then one chip per child carrying its name.
-  const lines = find(block, node => node.props?.className === 'dsm-lineage-modelline')
-  assert.equal(lines.length, 1)
-  const lineText = []
-  walk(lines[0], node => { for (const child of node.props?.children || []) if (typeof child === 'string') lineText.push(child) })
-  assert.deepEqual(lineText.slice(0, 2), ['DeepSeek-V4.1-Flash', 'high'])
-  const chips = find(block, node => node.props?.className === 'dsm-chip')
-  assert.deepEqual(chips.map(chip => chip.props['data-dsm-subagent']), ['child'])
-  const [nameCopy, idCopy] = find(chips[0], node => node.props?.className === 'dsm-copy')
-  assert.equal(nameCopy.props.children[0], 'stage-1', 'the chip face is the short name')
-  nameCopy.props.onClick(event)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(applied.clipboardWrites.at(-1), 'stage-1')
-  idCopy.props.onClick(event)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(applied.clipboardWrites.at(-1), 'child')
+test('a child session gets the switcher and its own model badge', () => {
+  const applied = applyPlugin()
+  const data = subagentFixture()
+  const lineage = applied.registrations.find(entry => entry.options.name === 'conversation.session.header.lineage')
+  const props = slotProps(applied, data, { lineageSessionId: 'child', displayTitle: 'Child', ...lineage.options.inject('child') })
+  const tree = applied.react.render(lineage.Component, props).tree
+  const switcher = findAll(tree, node => node.props?.className === 'dsm-sa-switcher')[0]
+  assert.ok(switcher)
+  assert.ok(textsOf(switcher).includes('stage one'), 'the switcher names the current child by its label')
+  const rootProps = slotProps(applied, data, { lineageSessionId: 'w1-a', displayTitle: 'Alpha', ...lineage.options.inject('w1-a') })
+  assert.equal(applied.react.render(lineage.Component, rootProps).tree, null, 'a root session has no breadcrumb')
+
+  const badge = applied.registrations.find(entry => entry.options.id === 'dsh-session-manager-model')
+  const badgeTree = applied.react.render(badge.Component, slotProps(applied, data, { sessionId: 'child' })).tree
+  assert.deepEqual(textsOf(badgeTree), ['DeepSeek-V4.1-Flash', 'high'])
+  assert.equal(applied.react.render(badge.Component, slotProps(applied, data, { sessionId: 'w1-b' })).tree, null)
 })
