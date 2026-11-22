@@ -1320,6 +1320,69 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Model route one session runs on, read from the Host's `modelSelection`
+     * projection: the pending choice (`next`) wins over the last one used.
+     *
+     * @param {any} list - `sessions.list` snapshot.
+     * @param {string} id - session id.
+     * @returns {{provider: string, model: string, effort?: string}|undefined}
+     */
+    function modelSelectionOf(list, id) {
+      const selection = list?.byId?.[id]?.projectionValues?.modelSelection
+        ?? list?.projectionsBySession?.[id]?.values?.modelSelection
+      const shown = selection?.next ?? selection?.lastUsed
+      if (!shown || typeof shown.provider !== 'string' || typeof shown.model !== 'string') return undefined
+      if (shown.provider === '' || shown.model === '') return undefined
+      const effort = typeof shown.reasoningEffort === 'string' && shown.reasoningEffort !== '' ? shown.reasoningEffort : undefined
+      return effort === undefined ? { provider: shown.provider, model: shown.model } : { provider: shown.provider, model: shown.model, effort }
+    }
+
+    /**
+     * One-line `model · effort` text; the provider is left out because the
+     * model id already names its route in this deployment.
+     *
+     * @param {{model: string, effort?: string}|undefined} selection
+     * @returns {string} the text, or '' when unknown.
+     */
+    function modelText(selection) {
+      if (!selection) return ''
+      return selection.effort === undefined ? selection.model : `${selection.model} · ${selection.effort}`
+    }
+
+    /**
+     * Direct subagents of one session, in catalog order, with what a row needs.
+     * The label comes from the parent's catalog (the name the delegation gave the
+     * child), then the child's own title.
+     *
+     * @param {any} list - `sessions.list` snapshot.
+     * @param {Map<string, string[]>} children - output of {@link buildChildren}.
+     * @param {string} parentId - parent session id.
+     * @returns {Array<{id: string, label: string, mode?: string, running: boolean, model?: object}>}
+     */
+    function subagentEntries(list, children, parentId) {
+      const ids = children.get(parentId) || []
+      if (ids.length === 0) return []
+      const catalog = list?.projectionsBySession?.[parentId]?.values?.subagentCatalog
+        ?? list?.byId?.[parentId]?.projectionValues?.subagentCatalog
+        ?? []
+      const entryOf = new Map()
+      for (const entry of Array.isArray(catalog) ? catalog : []) if (entry && typeof entry.id === 'string') entryOf.set(entry.id, entry)
+      return ids.map((id) => {
+        const row = list?.byId?.[id]
+        const entry = entryOf.get(id)
+        const label = String(entry?.label || row?.displayTitle || row?.title || id)
+        const model = modelSelectionOf(list, id)
+        return {
+          id,
+          label,
+          ...(typeof entry?.mode === 'string' ? { mode: entry.mode } : {}),
+          running: row?.running === true,
+          ...(model === undefined ? {} : { model }),
+        }
+      })
+    }
+
+    /**
      * Page a block must open at so nothing that needs attention stays hidden.
      * @param {readonly string[]} ids - the block's members, in render order.
      * @param {Set<string>} attention - sessions at work, waiting or unread.
@@ -2061,6 +2124,11 @@ window.__ModuleLoader__.load({
       'status.question': '等待回答',
       'status.running': '正在执行',
       'status.subagents': '{n} 个子会话执行中',
+      'subagents.toggle': '子会话：{running} 个执行中 / 共 {n} 个',
+      'subagents.list': '子会话',
+      'subagents.modelUnknown': '模型未知',
+      'subagents.running': '执行中',
+      'hover.model': '模型：{model}',
       'status.subagentJobs': '{n} 个子会话的后台任务执行中',
       'status.jobs': '{n} 个本会话的后台任务执行中',
       'status.unread': '已完成，未读',
@@ -2194,6 +2262,11 @@ window.__ModuleLoader__.load({
       'status.question': 'Waiting for an answer',
       'status.running': 'Running',
       'status.subagents': '{n} subagent(s) running',
+      'subagents.toggle': 'Subagents: {running} running of {n}',
+      'subagents.list': 'Subagents',
+      'subagents.modelUnknown': 'model unknown',
+      'subagents.running': 'running',
+      'hover.model': 'Model: {model}',
       'status.subagentJobs': '{n} background job(s) from subagents',
       'status.jobs': '{n} background job(s) of this session',
       'status.unread': 'Finished, unread',
@@ -2473,6 +2546,17 @@ window.__ModuleLoader__.load({
     .dsm-row[data-unread="true"] .dsm-title{font-weight:600}
     .dsm-workspace{flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
     .dsm-snippet{flex:0 1 auto;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
+    .dsm-subs{flex:none;margin-left:4px;padding:0 5px;border:0;border-radius:var(--dsw-radius-xs);font:inherit;font-size:10px;line-height:16px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);background:color-mix(in srgb,currentColor 12%,transparent);cursor:pointer}
+    .dsm-subs[data-running="true"]{color:var(--dsw-alias-state-business-primary)}
+    .dsm-subs:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}
+    .dsm-subs-list{display:flex;flex-direction:column;margin:0 0 2px 22px;padding-left:8px;border-left:1px solid var(--dsw-alias-border-l2)}
+    .dsm-sub{display:flex;align-items:center;gap:6px;min-width:0;padding:2px 6px;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;cursor:pointer}
+    .dsm-sub:hover,.dsm-sub:focus-visible{background:var(--dsw-alias-bg-hover,color-mix(in srgb,currentColor 8%,transparent));outline:none}
+    .dsm-sub[data-current="true"]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 14%,transparent)}
+    .dsm-sub-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-label-quaternary,var(--dsw-alias-label-tertiary))}
+    .dsm-sub[data-running="true"] .dsm-sub-dot{background:var(--dsw-alias-state-business-primary)}
+    .dsm-sub-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dsm-sub-model{flex:none;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
     .dsm-time{flex:0 0 4.5em;width:4.5em;margin-left:6px;text-align:right;white-space:nowrap;font-size:10px;line-height:16px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}
     .dsm-action{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:24px;height:20px;flex:0 0 24px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);opacity:0;cursor:pointer;font:inherit;font-size:13px}
     /* Hover hands the trailing cell to the actions, exactly like the shipped rows:
@@ -2613,11 +2697,47 @@ window.__ModuleLoader__.load({
      * @param {object|undefined} summary - the session summary.
      * @returns {string} a multi-line tooltip.
      */
-    function hoverTitle(title, workspaceLabel, summary) {
+    function hoverTitle(title, workspaceLabel, summary, modelLine) {
       const lines = [title]
       if (workspaceLabel) lines.push(workspaceLabel)
       if (summary?.cwd) lines.push(summary.cwd)
+      if (modelLine) lines.push(modelLine)
       return lines.join('\n')
+    }
+
+    /**
+     * The expandable list of a session's direct subagents: what each one is
+     * called, whether it runs, and which model and reasoning effort it uses —
+     * the one thing the native lineage dropdown does not show.
+     *
+     * @param {object} props - `entries`, `currentId`, `onOpen`, `t`.
+     * @returns {object} the group.
+     */
+    function SubagentList({ entries, currentId, onOpen, t }) {
+      return h('div', { className: 'dsm-subs-list', role: 'group', 'aria-label': t('subagents.list') },
+        entries.map((entry) => {
+          const model = modelText(entry.model)
+          const tip = [entry.label, model ? t('hover.model', { model }) : t('subagents.modelUnknown'), entry.running ? t('subagents.running') : null]
+            .filter(Boolean).join('\n')
+          return h('div', {
+            key: entry.id,
+            className: 'dsm-sub',
+            role: 'treeitem',
+            tabIndex: 0,
+            title: tip,
+            'data-running': String(entry.running),
+            'data-current': String(entry.id === currentId),
+            'data-dsm-subagent': entry.id,
+            'aria-selected': String(entry.id === currentId),
+            onClick: (event) => { event.stopPropagation(); onOpen(entry.id) },
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onOpen(entry.id) }
+            },
+          },
+          h('span', { className: 'dsm-sub-dot', 'aria-hidden': 'true' }),
+          h('span', { className: 'dsm-sub-label' }, entry.label),
+          h('span', { className: 'dsm-sub-model' }, model || t('subagents.modelUnknown')))
+        }))
     }
 
     /**
@@ -2659,9 +2779,10 @@ window.__ModuleLoader__.load({
       workspaceLabel, workspaceHint, snippet, titleMatch, canReorder = false, priority, flat = false,
       pinnedSection = false, selectable = false, selected = false, onToggleSelect, toggleLabel,
       groupedByPriority = false, folderOptions, scope, onFolderOver, onAssignFolder, bulkMulti = false,
-      stacked = false,
+      stacked = false, model, subagents = NO_SUBAGENTS,
     }) {
       const [menuOpen, setMenuOpen] = useState(false)
+      const [subsOpen, setSubsOpen] = useState(false)
       const menuItems = useMemo(() => {
         const items = [
           // The id states the action, not the state: a label swap alone left the
@@ -2725,7 +2846,18 @@ window.__ModuleLoader__.load({
       // workspace group does not paint the name — the group header says it once —
       // but the truncated title still has to be identifiable on its own, so the
       // hover-only `workspaceHint` fills the line the visible label would have.
-      const titleNode = h('span', { className: 'dsm-title', title: hoverTitle(title, workspaceLabel ?? workspaceHint, summary) }, ...titleParts(title, titleMatch))
+      const modelLine = model === undefined ? '' : t('hover.model', { model: modelText(model) })
+      const titleNode = h('span', { className: 'dsm-title', title: hoverTitle(title, workspaceLabel ?? workspaceHint, summary, modelLine) }, ...titleParts(title, titleMatch))
+      const subsRunning = subagents.reduce((n, entry) => n + (entry.running ? 1 : 0), 0)
+      const subsNode = subagents.length === 0 ? null : h('button', {
+        type: 'button',
+        className: 'dsm-subs',
+        'data-running': String(subsRunning > 0),
+        'aria-expanded': String(subsOpen),
+        title: t('subagents.toggle', { running: subsRunning, n: subagents.length }),
+        'aria-label': t('subagents.toggle', { running: subsRunning, n: subagents.length }),
+        onClick: (event) => { event.stopPropagation(); setSubsOpen(value => !value) },
+      }, subsRunning > 0 ? `${subsRunning}/${subagents.length}` : String(subagents.length))
       const workspaceNode = workspaceLabel === undefined ? null : h('span', { className: 'dsm-workspace' }, workspaceLabel)
       const snippetNode = snippet === undefined || snippet === '' ? null : h('span', { className: 'dsm-snippet', title: snippet }, snippet)
       const pinnedNode = pinned && !archived && !pinnedSection
@@ -2886,9 +3018,9 @@ window.__ModuleLoader__.load({
       // every row would only cost the title its width.
       ...(stacked
         ? [h('span', { className: 'dsm-stack' },
-          h('span', { className: 'dsm-stack-main' }, titleNode, pinnedNode, priorityNode),
+          h('span', { className: 'dsm-stack-main' }, titleNode, pinnedNode, priorityNode, subsNode),
           hasSub ? h('span', { className: 'dsm-stack-sub' }, snippetNode, workspaceNode) : null)]
-        : [titleNode, workspaceNode, snippetNode, pinnedNode, priorityNode]),
+        : [titleNode, workspaceNode, snippetNode, pinnedNode, priorityNode, subsNode]),
       h(TimeCell, { status, updatedAt: summary?.updatedAt, t }),
       h(Menu, {
         open: menuOpen,
@@ -2916,12 +3048,14 @@ window.__ModuleLoader__.load({
         portal: true,
       }),
       )
-      return row
+      if (!subsOpen || subagents.length === 0) return row
+      return h(React.Fragment, null, row, h(SubagentList, { entries: subagents, currentId, onOpen, t }))
     }
 
     // Rows are pure views over stable props: memoising them means a drop marker or a
     // status tick only re-renders the rows whose own props changed.
     const SessionRowCell = React.memo(SessionRow)
+    const NO_SUBAGENTS = Object.freeze([])
 
     /**
      * One collapsible block: the global pinned block, a workspace, or the ungrouped bucket.
@@ -3329,6 +3463,23 @@ window.__ModuleLoader__.load({
       }, [byId])
 
       const { children, rollup } = useMemo(() => buildRollup(list, jobsState), [list, jobsState])
+      // Per snapshot, so a memoised row only re-renders when its own entries change.
+      const subagentIndex = useMemo(() => {
+        const index = new Map()
+        for (const parentId of children.keys()) {
+          const entries = subagentEntries(list, children, parentId)
+          if (entries.length > 0) index.set(parentId, entries)
+        }
+        return index
+      }, [list, children])
+      const modelIndex = useMemo(() => {
+        const index = new Map()
+        for (const id of Object.keys(list?.byId || {})) {
+          const selection = modelSelectionOf(list, id)
+          if (selection !== undefined) index.set(id, selection)
+        }
+        return index
+      }, [list])
 
       // One status object per session per (rollup, statuses) generation. Rows are
       // memoised and the region reads status in several derivations, so the identity
@@ -3867,6 +4018,8 @@ window.__ModuleLoader__.load({
           dragging: drag?.sessionId === sessionId,
           dropHalf: dropTarget?.sessionId === sessionId ? dropTarget.half : null,
           bulkMulti,
+          model: modelIndex.get(sessionId),
+          subagents: subagentIndex.get(sessionId),
           onDragStart: setDrag,
           // `dragover` fires continuously: only a *changed* cell may re-render.
           // A pointer stream is continuous: only a *changed* cell may re-render.
@@ -3898,7 +4051,7 @@ window.__ModuleLoader__.load({
       // `priorities` belongs here: without it the memoised renderer kept writing the
       // labels it saw when it was created, so a new P1–P4 choice only showed up after
       // something else rebuilt the rows.
-      }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder,
+      }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder, modelIndex, subagentIndex,
         handleDragEnd, handleDragOverMulti, handleDragOverRow, handleFolderOver, handleToggleSelect, move, open,
         pinnedSet, priorities, selectAction, statusCache, statusOfId, t, workspaceLabelBySession, workspaceOf])
 

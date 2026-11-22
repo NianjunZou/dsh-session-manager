@@ -44,6 +44,9 @@ import {
   workspaceLabelOf,
   workspaceOfSession,
   buildChildren,
+  modelSelectionOf,
+  modelText,
+  subagentEntries,
   buildRollup,
   computeGroups,
   descendantsOf,
@@ -1017,4 +1020,41 @@ test('watchTargets covers every painted row and its whole subtree', () => {
   // Degrades instead of throwing: no children index, blank ids, absent list.
   assert.deepEqual(watchTargets(['', null, 'root'], undefined), ['root'])
   assert.deepEqual(watchTargets(undefined, children), [])
+})
+
+test('modelSelectionOf reads the pending choice before the last one used', () => {
+  const list = { byId: {
+    a: { id: 'a', projectionValues: { modelSelection: { next: { provider: 'p', model: 'm-next', reasoningEffort: 'high' }, lastUsed: { provider: 'p', model: 'm-old' } } } },
+    b: { id: 'b', projectionValues: { modelSelection: { lastUsed: { provider: 'p', model: 'm-old', reasoningEffort: '' } } } },
+    c: { id: 'c' },
+  } }
+  assert.deepEqual(modelSelectionOf(list, 'a'), { provider: 'p', model: 'm-next', effort: 'high' })
+  assert.deepEqual(modelSelectionOf(list, 'b'), { provider: 'p', model: 'm-old' })
+  assert.equal(modelSelectionOf(list, 'c'), undefined)
+  assert.equal(modelText(modelSelectionOf(list, 'a')), 'm-next · high')
+  assert.equal(modelText(modelSelectionOf(list, 'b')), 'm-old')
+  assert.equal(modelText(undefined), '')
+})
+
+test('subagentEntries names each child from the catalog and carries its model and run state', () => {
+  const list = {
+    byId: {
+      parent: { id: 'parent' },
+      k1: { id: 'k1', parentId: 'parent', running: true, title: 'child one title',
+        projectionValues: { modelSelection: { lastUsed: { provider: 'gateway-a', model: 'DeepSeek-V4.1-Flash', reasoningEffort: 'medium' } } } },
+    },
+    projectionsBySession: {
+      parent: { values: { subagentCatalog: [
+        { id: 'k1', label: 'reviewer', mode: 'spawn' },
+        { id: 'k2', label: 'checker', mode: 'fork' },
+        { id: 'ext', label: 'outside', mode: 'external' },
+      ] } },
+    },
+  }
+  const children = buildChildren(list)
+  assert.deepEqual(subagentEntries(list, children, 'parent'), [
+    { id: 'k1', label: 'reviewer', mode: 'spawn', running: true, model: { provider: 'gateway-a', model: 'DeepSeek-V4.1-Flash', effort: 'medium' } },
+    { id: 'k2', label: 'checker', mode: 'fork', running: false },
+  ])
+  assert.deepEqual(subagentEntries(list, children, 'k1'), [])
 })

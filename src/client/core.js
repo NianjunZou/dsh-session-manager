@@ -1306,6 +1306,69 @@ export function workspaceLabels(workspaces) {
 }
 
 /**
+ * Model route one session runs on, read from the Host's `modelSelection`
+ * projection: the pending choice (`next`) wins over the last one used.
+ *
+ * @param {any} list - `sessions.list` snapshot.
+ * @param {string} id - session id.
+ * @returns {{provider: string, model: string, effort?: string}|undefined}
+ */
+export function modelSelectionOf(list, id) {
+  const selection = list?.byId?.[id]?.projectionValues?.modelSelection
+    ?? list?.projectionsBySession?.[id]?.values?.modelSelection
+  const shown = selection?.next ?? selection?.lastUsed
+  if (!shown || typeof shown.provider !== 'string' || typeof shown.model !== 'string') return undefined
+  if (shown.provider === '' || shown.model === '') return undefined
+  const effort = typeof shown.reasoningEffort === 'string' && shown.reasoningEffort !== '' ? shown.reasoningEffort : undefined
+  return effort === undefined ? { provider: shown.provider, model: shown.model } : { provider: shown.provider, model: shown.model, effort }
+}
+
+/**
+ * One-line `model · effort` text; the provider is left out because the
+ * model id already names its route in this deployment.
+ *
+ * @param {{model: string, effort?: string}|undefined} selection
+ * @returns {string} the text, or '' when unknown.
+ */
+export function modelText(selection) {
+  if (!selection) return ''
+  return selection.effort === undefined ? selection.model : `${selection.model} · ${selection.effort}`
+}
+
+/**
+ * Direct subagents of one session, in catalog order, with what a row needs.
+ * The label comes from the parent's catalog (the name the delegation gave the
+ * child), then the child's own title.
+ *
+ * @param {any} list - `sessions.list` snapshot.
+ * @param {Map<string, string[]>} children - output of {@link buildChildren}.
+ * @param {string} parentId - parent session id.
+ * @returns {Array<{id: string, label: string, mode?: string, running: boolean, model?: object}>}
+ */
+export function subagentEntries(list, children, parentId) {
+  const ids = children.get(parentId) || []
+  if (ids.length === 0) return []
+  const catalog = list?.projectionsBySession?.[parentId]?.values?.subagentCatalog
+    ?? list?.byId?.[parentId]?.projectionValues?.subagentCatalog
+    ?? []
+  const entryOf = new Map()
+  for (const entry of Array.isArray(catalog) ? catalog : []) if (entry && typeof entry.id === 'string') entryOf.set(entry.id, entry)
+  return ids.map((id) => {
+    const row = list?.byId?.[id]
+    const entry = entryOf.get(id)
+    const label = String(entry?.label || row?.displayTitle || row?.title || id)
+    const model = modelSelectionOf(list, id)
+    return {
+      id,
+      label,
+      ...(typeof entry?.mode === 'string' ? { mode: entry.mode } : {}),
+      running: row?.running === true,
+      ...(model === undefined ? {} : { model }),
+    }
+  })
+}
+
+/**
  * Page a block must open at so nothing that needs attention stays hidden.
  * @param {readonly string[]} ids - the block's members, in render order.
  * @param {Set<string>} attention - sessions at work, waiting or unread.

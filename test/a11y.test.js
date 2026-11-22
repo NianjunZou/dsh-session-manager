@@ -57,7 +57,7 @@ test('the region is fully operable from the keyboard', () => {
 test('a truncated title still exposes its full text', () => {
   // The tooltip carries the full title plus where the session lives, so a
   // truncated row is still identifiable on hover.
-  assert.match(code, /className: 'dsm-title', title: hoverTitle\(title, workspaceLabel \?\? workspaceHint, summary\)/)
+  assert.match(code, /className: 'dsm-title', title: hoverTitle\(title, workspaceLabel \?\? workspaceHint, summary, modelLine\)/)
   assert.match(code, /\.dsm-title\{[^}]*text-overflow:ellipsis/)
 })
 
@@ -67,4 +67,11 @@ test('a row grouped under a workspace still names it on hover', () => {
   // owning workspace is resolved per row and handed over as a hover-only hint.
   assert.match(code, /workspaceHint: workspaceLabelBySession\.get\(sessionId\)/)
   assert.match(code, /workspaceLabelBySession = useMemo\(\(\) => workspaceLabels\(workspaces\)/)
+})
+
+test('a subagent chip is a labelled toggle and its list is a keyboard-operable group', () => {
+  assert.match(code, /className: 'dsm-subs',[\s\S]{0,120}'aria-expanded': String\(subsOpen\)/)
+  assert.match(code, /'aria-label': t\('subagents\.toggle'/)
+  assert.match(code, /className: 'dsm-subs-list', role: 'group', 'aria-label': t\('subagents\.list'\)/)
+  assert.match(code, /className: 'dsm-sub',\s+role: 'treeitem',\s+tabIndex: 0/)
 })
