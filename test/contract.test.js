@@ -463,6 +463,23 @@ test('the region renders one row per visible session with the pinned block first
     'the two fixed headings, then two workspace blocks, and no empty bucket')
 })
 
+test('a row names its owning workspace on hover, grouped and pinned rows included', () => {
+  const applied = applyPlugin()
+  const { tree } = renderRegion(applied)
+  const tooltips = new Map()
+  for (const row of rowsOf(tree)) {
+    const titles = []
+    walk(row, node => { if (node.props?.className === 'dsm-title') titles.push(node.props.title) })
+    tooltips.set(row.props['data-dsm-session'], titles[0] ?? '')
+  }
+  // A grouped row paints no workspace name — the block header says it once — so
+  // the tooltip is the only place a truncated title can still be placed.
+  assert.deepEqual(tooltips.get('w1-a').split('\n').slice(0, 2), ['Alpha', 'alpha'])
+  // The pinned block spans workspaces: nothing but the tooltip can name the owner.
+  assert.deepEqual(tooltips.get('pinned').split('\n').slice(0, 2), ['Pinned one', 'alpha'])
+  assert.deepEqual(tooltips.get('w2-a').split('\n').slice(0, 2), ['Gamma', 'beta'])
+})
+
 test('a workspace row reads like the shipped one: folder seat, chevron, path tooltip', () => {
   const applied = applyPlugin()
   const { tree } = renderRegion(applied)

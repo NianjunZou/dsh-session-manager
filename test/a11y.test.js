@@ -57,6 +57,14 @@ test('the region is fully operable from the keyboard', () => {
 test('a truncated title still exposes its full text', () => {
   // The tooltip carries the full title plus where the session lives, so a
   // truncated row is still identifiable on hover.
-  assert.match(code, /className: 'dsm-title', title: hoverTitle\(title, workspaceLabel, summary\)/)
+  assert.match(code, /className: 'dsm-title', title: hoverTitle\(title, workspaceLabel \?\? workspaceHint, summary\)/)
   assert.match(code, /\.dsm-title\{[^}]*text-overflow:ellipsis/)
+})
+
+test('a row grouped under a workspace still names it on hover', () => {
+  // The group header carries the workspace name, so the row does not paint it.
+  // The tooltip is the only place a truncated title can be placed, so the
+  // owning workspace is resolved per row and handed over as a hover-only hint.
+  assert.match(code, /workspaceHint: workspaceLabelBySession\.get\(sessionId\)/)
+  assert.match(code, /workspaceLabelBySession = useMemo\(\(\) => workspaceLabels\(workspaces\)/)
 })

@@ -1111,7 +1111,7 @@ function titleParts(title, ranges) {
 function SessionRow({
   sessionId, summary, status, accountId, accountOrder, currentId, archived, pinned,
   t, dragging = false, dropHalf = null, onDragStart, onDragOverRow, onDragEnd, onOpen, onSelectAction, onMove,
-  workspaceLabel, snippet, titleMatch, canReorder = false, priority, flat = false,
+  workspaceLabel, workspaceHint, snippet, titleMatch, canReorder = false, priority, flat = false,
   pinnedSection = false, selectable = false, selected = false, onToggleSelect, toggleLabel,
   groupedByPriority = false, folderOptions, scope, onFolderOver, onAssignFolder, bulkMulti = false,
   stacked = false,
@@ -1176,7 +1176,11 @@ function SessionRow({
 
   const title = String(summary?.displayTitle || summary?.title || sessionId)
   const drop = dropHalf
-  const titleNode = h('span', { className: 'dsm-title', title: hoverTitle(title, workspaceLabel, summary) }, ...titleParts(title, titleMatch))
+  // The tooltip always names the owning workspace. A row that sits inside a
+  // workspace group does not paint the name — the group header says it once —
+  // but the truncated title still has to be identifiable on its own, so the
+  // hover-only `workspaceHint` fills the line the visible label would have.
+  const titleNode = h('span', { className: 'dsm-title', title: hoverTitle(title, workspaceLabel ?? workspaceHint, summary) }, ...titleParts(title, titleMatch))
   const workspaceNode = workspaceLabel === undefined ? null : h('span', { className: 'dsm-workspace' }, workspaceLabel)
   const snippetNode = snippet === undefined || snippet === '' ? null : h('span', { className: 'dsm-snippet', title: snippet }, snippet)
   const pinnedNode = pinned && !archived && !pinnedSection
@@ -2322,6 +2326,9 @@ function SessionManagerRegion(props) {
       // which exposes no move operation; ungrouped rows have no account either.
       canReorder: typeof accountId === 'string' && accountId !== '',
       priority: priorityLevel(priorities?.[sessionId]),
+      // Hover-only: the owning workspace for rows grouped under its header, and
+      // for the pinned / priority blocks that span workspaces.
+      workspaceHint: workspaceLabelBySession.get(sessionId),
       flat,
       pinnedSection,
       selectable: bulkActive ? true : selectable,
@@ -2339,7 +2346,7 @@ function SessionManagerRegion(props) {
   // something else rebuilt the rows.
   }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder,
     handleDragEnd, handleDragOverMulti, handleDragOverRow, handleFolderOver, handleToggleSelect, move, open,
-    pinnedSet, priorities, selectAction, statusCache, statusOfId, t, workspaceOf])
+    pinnedSet, priorities, selectAction, statusCache, statusOfId, t, workspaceLabelBySession, workspaceOf])
 
   // Priority view: the same rows, grouped by the label they carry. Order inside a
   // level follows the active ordering, so switching order still reads naturally.
