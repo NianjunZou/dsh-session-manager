@@ -80,3 +80,9 @@ test('the lineage footer is a labelled group under the native subagent dropdown'
   assert.match(code, /name: 'conversation\.session\.header\.actions\.subagent\.footer',\s+id: 'dsh-session-manager-lineage-models'/)
   assert.match(code, /className: 'dsm-lineage-models', role: 'group', 'aria-label': t\('lineage\.models'\)/)
 })
+
+test('footer chips are real buttons with a name and an id action', () => {
+  assert.match(code, /h\(CopyChip, \{ value: name, label: name, title: t\('copy\.nameTitle'/)
+  assert.match(code, /h\(CopyChip, \{ value: entry\.id, label: t\('copy\.id'\), title: t\('copy\.idTitle'/)
+  assert.match(code, /type: 'button',\s+className: 'dsm-copy'/)
+})

@@ -48,6 +48,7 @@ import {
   modelText,
   subagentEntries,
   lineageSubagents,
+  modelGroups,
   buildRollup,
   computeGroups,
   descendantsOf,
@@ -1083,4 +1084,28 @@ test('lineageSubagents lists the whole family from the root, whichever member as
   assert.deepEqual(shape(lineageSubagents(list, 'root')), expected)
   assert.deepEqual(shape(lineageSubagents(list, 'a1')), expected, 'a child sees the same family')
   assert.deepEqual(lineageSubagents({ byId: { solo: { id: 'solo' } } }, 'solo'), [])
+})
+
+test('modelGroups folds a family on one model into one group, unknown last', () => {
+  const m = (model, effort) => ({ model, ...(effort ? { effort } : {}) })
+  const rows = [
+    { id: 'a', model: m('flash', 'high') },
+    { id: 'b' },
+    { id: 'c', model: m('flash', 'high') },
+    { id: 'd', model: m('flash') },
+  ]
+  const groups = modelGroups(rows)
+  assert.deepEqual(groups.map(g => [g.model, g.effort, g.entries.map(e => e.id)]), [
+    ['flash', 'high', ['a', 'c']],
+    ['flash', undefined, ['d']],
+    [undefined, undefined, ['b']],
+  ])
+})
+
+test('subagentEntries follows the catalog (creation) order, not the byId order', () => {
+  const list = {
+    byId: { p: { id: 'p' }, late: { id: 'late', parentId: 'p' }, early: { id: 'early', parentId: 'p' }, stray: { id: 'stray', parentId: 'p' } },
+    projectionsBySession: { p: { values: { subagentCatalog: [{ id: 'early', label: 'E', mode: 'one-shot' }, { id: 'late', label: 'L', mode: 'one-shot' }] } } },
+  }
+  assert.deepEqual(subagentEntries(list, buildChildren(list), 'p').map(e => e.id), ['early', 'late', 'stray'])
 })

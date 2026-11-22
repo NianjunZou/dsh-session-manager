@@ -1898,9 +1898,20 @@ test('a subagent row and the lineage footer copy the name and the session id', a
   const footer = applied.registrations.find(entry => entry.options.name === 'conversation.session.header.actions.subagent.footer')
   assert.ok(footer, 'footer registered')
   const block = applied.react.render(footer.Component, { ...props, sessionId: 'child' }).tree
-  const rows = find(block, node => node.props?.className === 'dsm-lineage-row')
-  assert.deepEqual(rows.map(row => row.props['data-dsm-subagent']), ['child'])
-  find(rows[0], node => node.props?.className === 'dsm-copy')[1].props.onClick(event)
+  // One model line for the family, then one chip per child carrying its name.
+  const lines = find(block, node => node.props?.className === 'dsm-lineage-modelline')
+  assert.equal(lines.length, 1)
+  const lineText = []
+  walk(lines[0], node => { for (const child of node.props?.children || []) if (typeof child === 'string') lineText.push(child) })
+  assert.deepEqual(lineText.slice(0, 2), ['DeepSeek-V4.1-Flash', 'high'])
+  const chips = find(block, node => node.props?.className === 'dsm-chip')
+  assert.deepEqual(chips.map(chip => chip.props['data-dsm-subagent']), ['child'])
+  const [nameCopy, idCopy] = find(chips[0], node => node.props?.className === 'dsm-copy')
+  assert.equal(nameCopy.props.children[0], 'stage-1', 'the chip face is the short name')
+  nameCopy.props.onClick(event)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(applied.clipboardWrites.at(-1), 'stage-1')
+  idCopy.props.onClick(event)
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(applied.clipboardWrites.at(-1), 'child')
 })

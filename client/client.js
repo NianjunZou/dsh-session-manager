@@ -1367,7 +1367,13 @@ window.__ModuleLoader__.load({
         ?? []
       const entryOf = new Map()
       for (const entry of Array.isArray(catalog) ? catalog : []) if (entry && typeof entry.id === 'string') entryOf.set(entry.id, entry)
-      return ids.map((id) => {
+      // The parent's catalog is the order the native dropdown shows (creation
+      // order); children known only from `byId[*].parentId` follow it.
+      const ordered = [
+        ...(Array.isArray(catalog) ? catalog : []).map(entry => entry?.id).filter(id => ids.includes(id)),
+        ...ids.filter(id => !entryOf.has(id)),
+      ].filter((id, at, all) => all.indexOf(id) === at)
+      return ordered.map((id) => {
         const row = list?.byId?.[id]
         const entry = entryOf.get(id)
         const label = String(entry?.label || row?.displayTitle || row?.title || id)
@@ -1411,6 +1417,29 @@ window.__ModuleLoader__.load({
       }
       walk(root, 1)
       return out
+    }
+
+    /**
+     * Group subagent rows by `model · effort`, keeping first-appearance order of
+     * both groups and members: a family that runs on one model reads as one line
+     * instead of the same model repeated per child.
+     *
+     * @param {Array<{model?: {model: string, effort?: string}}>} rows - subagent rows.
+     * @returns {Array<{key: string, model?: string, effort?: string, entries: object[]}>}
+     */
+    function modelGroups(rows) {
+      const groups = new Map()
+      for (const row of rows) {
+        const key = row.model === undefined ? '' : `${row.model.model}\u0000${row.model.effort ?? ''}`
+        let group = groups.get(key)
+        if (!group) {
+          group = { key, entries: [], ...(row.model === undefined ? {} : { model: row.model.model }), ...(row.model?.effort === undefined ? {} : { effort: row.model.effort }) }
+          groups.set(key, group)
+        }
+        group.entries.push(row)
+      }
+      // An unknown model says the least, so it goes last.
+      return [...groups.values()].sort((a, b) => (a.key === '' ? 1 : 0) - (b.key === '' ? 1 : 0))
     }
 
     /**
@@ -2161,6 +2190,9 @@ window.__ModuleLoader__.load({
       'subagents.running': '执行中',
       'hover.model': '模型：{model}',
       'lineage.models': '子会话模型与思考强度',
+      'lineage.head': '子会话模型 · {n} 个',
+      'lineage.count': '{n} 个',
+      'effort.default': '默认强度',
       'copy.name': '名称',
       'copy.id': 'ID',
       'copy.nameTitle': '复制子会话名称：{value}',
@@ -2306,6 +2338,9 @@ window.__ModuleLoader__.load({
       'subagents.running': 'running',
       'hover.model': 'Model: {model}',
       'lineage.models': 'Subagent models and reasoning effort',
+      'lineage.head': 'Subagent models · {n}',
+      'lineage.count': '{n}',
+      'effort.default': 'default effort',
       'copy.name': 'Name',
       'copy.id': 'ID',
       'copy.nameTitle': 'Copy subagent name: {value}',
@@ -2602,13 +2637,25 @@ window.__ModuleLoader__.load({
     .dsm-sub[data-running="true"] .dsm-sub-dot{background:var(--dsw-alias-state-business-primary)}
     .dsm-sub-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .dsm-sub-model{flex:none;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
-    .dsm-lineage-models{display:flex;flex-direction:column;gap:1px;margin:4px 0 0;padding:6px 8px 4px;border-top:1px solid var(--dsw-alias-border-l2)}
-    .dsm-lineage-head{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);margin-bottom:2px}
-    .dsm-lineage-row{display:flex;align-items:baseline;gap:8px;min-width:0;font-size:12px;line-height:18px}
-    .dsm-lineage-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
-    .dsm-lineage-model{flex:none;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
-    .dsm-lineage-row[data-unknown="true"] .dsm-lineage-model{color:var(--dsw-alias-label-tertiary)}
+    .dsm-lineage-models{display:flex;flex-direction:column;gap:6px;margin:4px 0 0;padding:8px 10px 6px;border-top:1px solid var(--dsw-alias-border-l2)}
+    .dsm-lineage-head{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+    .dsm-lineage-group{display:flex;flex-direction:column;gap:4px}
+    .dsm-lineage-modelline{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;font-size:12px;line-height:18px}
+    .dsm-lineage-model{color:var(--dsw-alias-label-primary);word-break:break-all;font-variant-numeric:tabular-nums}
+    .dsm-lineage-model[data-unknown="true"]{color:var(--dsw-alias-label-tertiary)}
+    .dsm-effort{padding:0 5px;border-radius:var(--dsw-radius-xs);font-size:11px;line-height:16px;color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb,currentColor 16%,transparent)}
+    .dsm-effort[data-default="true"]{color:var(--dsw-alias-label-tertiary)}
+    .dsm-lineage-count{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+    .dsm-chips{display:flex;flex-wrap:wrap;gap:4px}
+    .dsm-chip{display:inline-flex;align-items:stretch;max-width:100%;border-radius:var(--dsw-radius-xs);background:color-mix(in srgb,var(--dsw-alias-label-primary) 8%,transparent)}
+    .dsm-chip .dsm-copy{font-size:11px;line-height:18px;padding:0 6px}
+    .dsm-chip .dsm-copy[data-part="name"]{color:var(--dsw-alias-label-secondary);max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsw-font-mono,ui-monospace,monospace)}
+    .dsm-chip .dsm-copy[data-part="id"]{padding:0 5px;border-left:1px solid var(--dsw-alias-border-l2);font-size:10px;opacity:.55}
+    .dsm-chip:hover .dsm-copy[data-part="id"],.dsm-chip:focus-within .dsm-copy[data-part="id"]{opacity:1}
+    .dsm-chip[data-running="true"] .dsm-copy[data-part="name"]{color:var(--dsw-alias-state-business-primary)}
     .dsm-copy{flex:none;padding:0 4px;border:0;border-radius:var(--dsw-radius-xs);font:inherit;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary);background:transparent;cursor:pointer}
+    .dsm-sub .dsm-copy{visibility:hidden}
+    .dsm-sub:hover .dsm-copy,.dsm-sub:focus-within .dsm-copy{visibility:visible}
     .dsm-copy:hover,.dsm-copy:focus-visible{color:var(--dsw-alias-label-primary);background:color-mix(in srgb,currentColor 12%,transparent);outline:none}
     .dsm-copy[data-state="done"]{color:var(--dsw-alias-state-business-primary)}
     .dsm-copy[data-state="failed"]{color:var(--dsw-alias-state-error,#d33)}
@@ -2790,7 +2837,7 @@ window.__ModuleLoader__.load({
      * @param {object} props - `value`, `label`, `title`, `t`.
      * @returns {object} the button.
      */
-    function CopyChip({ value, label, title, t }) {
+    function CopyChip({ value, label, title, t, part }) {
       const [state, setState] = useState('idle')
       useEffect(() => {
         if (state === 'idle') return undefined
@@ -2802,6 +2849,7 @@ window.__ModuleLoader__.load({
         type: 'button',
         className: 'dsm-copy',
         'data-state': state,
+        'data-part': part,
         title,
         'aria-label': title,
         onPointerDown: stop,
@@ -3483,10 +3531,11 @@ window.__ModuleLoader__.load({
      * @returns {object} the toggle.
      */
     /**
-     * Footer of the native subagent lineage dropdown: the same children it lists,
-     * each with `model · effort`, which the dropdown rows do not show. The Host
-     * offers no per-row slot there, so the models sit in one block below the tree
-     * in the tree's own order.
+     * Footer of the native subagent lineage dropdown. The dropdown rows already
+     * name each child, so this block does not list them again: it groups the
+     * family by `model · effort` (usually one line), and under each group shows
+     * the children's short names as chips. A chip copies the name; its `ID` end
+     * copies the session id. The Host offers no per-row slot in the dropdown.
      *
      * @param {object} props - session-scoped slot props (`sessionId`, `useSessions`, `t`).
      * @returns {object|null} the block, or nothing for a session without subagents.
@@ -3494,23 +3543,39 @@ window.__ModuleLoader__.load({
     function LineageModelFooter({ sessionId, useSessions, t }) {
       const list = useSessions(snapshot => snapshot)
       const rows = useMemo(() => (typeof sessionId === 'string' ? lineageSubagents(list, sessionId) : []), [list, sessionId])
+      const groups = useMemo(() => modelGroups(rows), [rows])
       if (rows.length === 0) return null
       return h('div', { className: 'dsm-lineage-models', role: 'group', 'aria-label': t('lineage.models') },
-        h('div', { className: 'dsm-lineage-head', 'aria-hidden': 'true' }, t('lineage.models')),
-        rows.map((row) => {
-          const model = modelText(row.model)
-          const label = row.name ? `${row.label} · ${row.name}` : row.label
-          return h('div', {
-            key: row.id,
-            className: 'dsm-lineage-row',
-            'data-unknown': String(model === ''),
-            'data-dsm-subagent': row.id,
-            title: [label, model ? t('hover.model', { model }) : t('subagents.modelUnknown')].join('\n'),
-          },
-          h('span', { className: 'dsm-lineage-label', style: row.depth > 1 ? { paddingLeft: `${(row.depth - 1) * 12}px` } : undefined }, row.label),
-          h('span', { className: 'dsm-lineage-model' }, model || t('subagents.modelUnknown')),
-          ...subagentCopies(row, t))
-        }))
+        h('div', { className: 'dsm-lineage-head' }, t('lineage.head', { n: rows.length })),
+        groups.map(group => h('div', { key: group.key || 'unknown', className: 'dsm-lineage-group' },
+          h('div', { className: 'dsm-lineage-modelline' },
+            h('span', { className: 'dsm-lineage-model', 'data-unknown': String(group.model === undefined) },
+              group.model ?? t('subagents.modelUnknown')),
+            group.model === undefined ? null
+              : h('span', { className: 'dsm-effort', 'data-default': String(group.effort === undefined) },
+                group.effort ?? t('effort.default')),
+            h('span', { className: 'dsm-lineage-count' }, t('lineage.count', { n: group.entries.length }))),
+          h('div', { className: 'dsm-chips' },
+            group.entries.map(entry => h(SubagentChip, { key: entry.id, entry, t }))))))
+    }
+
+    /**
+     * One child as a compact chip: the short name copies the name, the `ID` end
+     * copies the session id. The full label rides the tooltip.
+     *
+     * @param {object} props - `entry`, `t`.
+     * @returns {object} the chip.
+     */
+    function SubagentChip({ entry, t }) {
+      const name = entry.name || entry.label
+      return h('span', {
+        className: 'dsm-chip',
+        'data-running': String(entry.running),
+        'data-dsm-subagent': entry.id,
+        title: entry.name ? `${entry.label}\n${entry.name}` : entry.label,
+      },
+      h(CopyChip, { value: name, label: name, title: t('copy.nameTitle', { value: name }), t, part: 'name' }),
+      h(CopyChip, { value: entry.id, label: t('copy.id'), title: t('copy.idTitle', { value: entry.id }), t, part: 'id' }))
     }
 
     function TakeoverFooterAction({ takeover, setTakeover, t }) {

@@ -1353,7 +1353,13 @@ export function subagentEntries(list, children, parentId) {
     ?? []
   const entryOf = new Map()
   for (const entry of Array.isArray(catalog) ? catalog : []) if (entry && typeof entry.id === 'string') entryOf.set(entry.id, entry)
-  return ids.map((id) => {
+  // The parent's catalog is the order the native dropdown shows (creation
+  // order); children known only from `byId[*].parentId` follow it.
+  const ordered = [
+    ...(Array.isArray(catalog) ? catalog : []).map(entry => entry?.id).filter(id => ids.includes(id)),
+    ...ids.filter(id => !entryOf.has(id)),
+  ].filter((id, at, all) => all.indexOf(id) === at)
+  return ordered.map((id) => {
     const row = list?.byId?.[id]
     const entry = entryOf.get(id)
     const label = String(entry?.label || row?.displayTitle || row?.title || id)
@@ -1397,6 +1403,29 @@ export function lineageSubagents(list, sessionId) {
   }
   walk(root, 1)
   return out
+}
+
+/**
+ * Group subagent rows by `model · effort`, keeping first-appearance order of
+ * both groups and members: a family that runs on one model reads as one line
+ * instead of the same model repeated per child.
+ *
+ * @param {Array<{model?: {model: string, effort?: string}}>} rows - subagent rows.
+ * @returns {Array<{key: string, model?: string, effort?: string, entries: object[]}>}
+ */
+export function modelGroups(rows) {
+  const groups = new Map()
+  for (const row of rows) {
+    const key = row.model === undefined ? '' : `${row.model.model}\u0000${row.model.effort ?? ''}`
+    let group = groups.get(key)
+    if (!group) {
+      group = { key, entries: [], ...(row.model === undefined ? {} : { model: row.model.model }), ...(row.model?.effort === undefined ? {} : { effort: row.model.effort }) }
+      groups.set(key, group)
+    }
+    group.entries.push(row)
+  }
+  // An unknown model says the least, so it goes last.
+  return [...groups.values()].sort((a, b) => (a.key === '' ? 1 : 0) - (b.key === '' ? 1 : 0))
 }
 
 /**
