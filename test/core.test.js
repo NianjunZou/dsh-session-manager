@@ -55,6 +55,7 @@ import {
   durationParts,
   subagentParentOf,
   shortModel,
+  sharedRouteSuffix,
   workspaceForSession,
   buildRollup,
   computeGroups,
@@ -1114,11 +1115,20 @@ test('subagentParentOf prefers the parent catalog over the row', () => {
   assert.equal(subagentParentOf(list, 'r'), undefined)
 })
 
-test('shortModel drops the gateway route suffix only', () => {
-  assert.equal(shortModel('DeepSeek-V4.1-Flash-acme-relay'), 'DeepSeek-V4.1-Flash')
-  assert.equal(shortModel('Opus 5.5-acme-relay'), 'Opus 5.5')
-  assert.equal(shortModel('deepseek-v4-flash'), 'deepseek-v4-flash')
-  assert.equal(shortModel('x-relay'), 'x-relay', 'a bare suffix is not stripped')
+test('a route suffix is learned from the ids, never from a vendor list', () => {
+  const ids = ['DeepSeek-V4.1-Flash-acme-relay', 'Opus 5.5-acme-relay', 'GLM-5.3-acme-relay']
+  const suffix = sharedRouteSuffix(ids)
+  assert.equal(suffix, '-acme-relay')
+  assert.equal(shortModel(ids[0], suffix), 'DeepSeek-V4.1-Flash')
+  assert.equal(shortModel(ids[1], suffix), 'Opus 5.5')
+  // A capitalised shared segment is part of the name, not a tag.
+  assert.equal(sharedRouteSuffix(['DeepSeek-V4.1-Flash-acme-relay', 'GLM-5.3-Flash-acme-relay']), '-acme-relay')
+  assert.equal(sharedRouteSuffix(['A-Flash', 'B-Flash']), '')
+  // One id says nothing about what is shared.
+  assert.equal(sharedRouteSuffix(['DeepSeek-V4.1-Flash-acme-relay']), '')
+  assert.equal(sharedRouteSuffix(['deepseek-v4-flash', 'deepseek-v4-pro']), '')
+  assert.equal(shortModel('x', ''), 'x')
+  assert.equal(shortModel('-acme-relay', '-acme-relay'), '-acme-relay', 'never strips to nothing')
 })
 
 test('workspaceForSession resolves a subagent through its root', () => {

@@ -1951,6 +1951,20 @@ function FolderDialog({ request, folders, reserved, onSubmit, onCancel, t }) {
  * @returns {object} the toggle.
  */
 /**
+ * The route suffix shared by every model id the session list knows.
+ * @param {any} list - `sessions.list` snapshot.
+ * @returns {string}
+ */
+function routeSuffixOf(list) {
+  const models = []
+  for (const id of Object.keys(list?.byId || {})) {
+    const selection = modelSelectionOf(list, id)
+    if (selection !== undefined) models.push(selection.model)
+  }
+  return sharedRouteSuffix(models)
+}
+
+/**
  * Duration text in the native dropdown's shape: `38分33秒`, `2小时14分03秒`, `3天4小时`.
  * @param {number} ms - milliseconds.
  * @param {Function} t - translator.
@@ -1993,6 +2007,7 @@ function SubagentRows(props) {
     parentId, currentId, list, statuses, expanded, level, actions, t, onToggle, onClose,
   } = props
   const catalog = catalogOf(list, statuses, parentId) ?? { state: 'idle', entries: [] }
+  const suffix = useMemo(() => routeSuffixOf(list), [list])
   const now = useTicker(catalog.entries.some(entry => entry.activity === 'running'))
   const canExpand = entry => entry.mode !== 'external' && (catalogOf(list, statuses, entry.id)?.entries.length ?? 0) > 0
   const reserveDisclosure = catalog.entries.some(canExpand)
@@ -2073,7 +2088,7 @@ function SubagentRows(props) {
             model === undefined
               ? h('span', { className: 'dsm-sa-model-name', 'data-unknown': 'true' }, t('subagents.modelUnknown'))
               : h(React.Fragment, null,
-                h('span', { className: 'dsm-sa-model-name' }, shortModel(model.model)),
+                h('span', { className: 'dsm-sa-model-name' }, shortModel(model.model, suffix)),
                 h('span', { className: 'dsm-effort', 'data-default': String(model.effort === undefined) }, model.effort ?? t('effort.default'))))),
         tokens === undefined && duration === undefined ? null : h('span', { className: 'dsm-sa-metrics' },
           h('span', null, tokens === undefined ? '' : t('sa.tokens', { value: formatTokenCount(tokens) })),
@@ -2379,6 +2394,7 @@ const NOOP_SNAPSHOT = () => undefined
  */
 function SessionModelBadge({ sessionId, useSessions, t }) {
   const model = useSessions(state => modelSelectionOf(state, sessionId), (a, b) => modelText(a) === modelText(b))
+  const suffix = useSessions(state => routeSuffixOf(state))
   if (model === undefined) return null
   const text = modelText(model)
   return h('span', {
@@ -2386,7 +2402,7 @@ function SessionModelBadge({ sessionId, useSessions, t }) {
     title: t('hover.model', { model: `${model.provider}/${text}` }),
     'data-dsm-session-model': sessionId,
   },
-  h('span', { className: 'dsm-model-badge-name' }, shortModel(model.model)),
+  h('span', { className: 'dsm-model-badge-name' }, shortModel(model.model, suffix)),
   h('span', { className: 'dsm-effort', 'data-default': String(model.effort === undefined) }, model.effort ?? t('effort.default')))
 }
 

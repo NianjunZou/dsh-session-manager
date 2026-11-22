@@ -32,7 +32,7 @@
 | 5 | 内部 UI / 命令注册 | 占根 slot + 用宿主 primitives + 注册 locale | `ctx.slots.inject('sidebar.workspaces', () => ctx.slots.register({…}))`（`:1786`）；`require('@deepseek-ai/dsh-client-ui-primitives')` 取 `Menu/StateDot/Modal/icons`（`:22-34`）；`ctx.locale.register`（`:1715`）；自建 `<style data-dsh-session-manager>`（`:1717-1722`，随 effect 清理） | slot/视图 → `views.dsh/v1alpha1`（登记记录指向 v0.16）；primitives/locale → 标准暂无；DOM/样式归属已符合「effect 可枚举、可清理」 |
 | 6 | 自建通道（HTTP/WS/私 RPC/observer） | **无** | 无 `fetch`/`WebSocket`/`MutationObserver`/`postMessage` | 不适用 |
 
-补充：`dsh.bundle.patch`（`cordis.patch.yml`）与 `dsh.client`（platform/inject）是当前宿主的加载面，标准里对应 `capabilities` + `webseeds` 的一部分，但**安装/打包/加载机制标准未定义**（`spec/manifest.md` §1 明确不在范围）。
+补充：`dsh.bundle.patch`（`cordis.patch.yml`）与 `dsh.client`（platform/inject）是当前宿主的加载面，标准里对应 manifest 的能力面声明 + `webseeds` 的一部分，但**安装/打包/加载机制标准未定义**（`spec/manifest.md` §1 明确不在范围）。
 
 ## 2. 身份映射（改 id 的连带面）
 
@@ -80,7 +80,6 @@
   "name": "DSH Session Manager",
   "version": "0.1.7",
   "manifestVersion": "0.16",
-  "capabilities": { "client": { "apiVersion": "…" } },
   "requires": { "contracts": [{ "apiVersion": "views.dsh/v1alpha1", "kind": "ViewContribution" }] },
   "contributes": { "views": ["sidebar.workspaces"] }
 }

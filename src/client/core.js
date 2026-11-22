@@ -1336,23 +1336,38 @@ export function modelText(selection) {
 }
 
 /**
- * Route suffixes a gateway appends to every model id it serves. They repeat
- * on every row, so lists drop them and keep the full id in the tooltip.
+ * The route suffix every known model id shares, learned from the ids
+ * themselves rather than from a list of vendors: when at least two distinct
+ * ids end in the same run of lowercase `-segment`s, that run is a gateway
+ * tag (repeated on every row) rather than part of a model name. Capitalised
+ * or mixed segments stop the run, so `-Flash` is never taken for a tag.
+ *
+ * @param {Iterable<string>} models - model ids in view.
+ * @returns {string} the shared suffix including its leading `-`, or ''.
  */
-export const MODEL_ROUTE_SUFFIXES = Object.freeze([/-[a-z0-9]+-relay$/i])
+export function sharedRouteSuffix(models) {
+  const ids = [...new Set([...(models || [])].filter(id => typeof id === 'string' && id !== ''))]
+  if (ids.length < 2) return ''
+  const split = ids.map(id => id.split('-'))
+  const tail = []
+  for (let back = 1; ; back += 1) {
+    const segments = split.map(parts => (parts.length > back ? parts[parts.length - back] : undefined))
+    const first = segments[0]
+    if (first === undefined || !/^[a-z0-9]+$/.test(first) || segments.some(segment => segment !== first)) break
+    tail.unshift(first)
+  }
+  return tail.length === 0 ? '' : `-${tail.join('-')}`
+}
 
 /**
- * A model id without its gateway route suffix.
+ * A model id without the shared route suffix.
  * @param {string} model - model id.
+ * @param {string} suffix - output of {@link sharedRouteSuffix}.
  * @returns {string}
  */
-export function shortModel(model) {
-  let out = String(model ?? '')
-  for (const suffix of MODEL_ROUTE_SUFFIXES) {
-    const trimmed = out.replace(suffix, '')
-    if (trimmed !== '' && trimmed !== out) { out = trimmed; break }
-  }
-  return out
+export function shortModel(model, suffix = '') {
+  const id = String(model ?? '')
+  return suffix !== '' && id.endsWith(suffix) && id.length > suffix.length ? id.slice(0, -suffix.length) : id
 }
 
 /**
