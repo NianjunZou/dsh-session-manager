@@ -1350,6 +1350,45 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Route suffixes a gateway appends to every model id it serves. They repeat
+     * on every row, so lists drop them and keep the full id in the tooltip.
+     */
+    const MODEL_ROUTE_SUFFIXES = Object.freeze([/-[a-z0-9]+-relay$/i])
+
+    /**
+     * A model id without its gateway route suffix.
+     * @param {string} model - model id.
+     * @returns {string}
+     */
+    function shortModel(model) {
+      let out = String(model ?? '')
+      for (const suffix of MODEL_ROUTE_SUFFIXES) {
+        const trimmed = out.replace(suffix, '')
+        if (trimmed !== '' && trimmed !== out) { out = trimmed; break }
+      }
+      return out
+    }
+
+    /**
+     * The workspace a session belongs to: its own membership, or the membership
+     * of its root ancestor for a subagent (children are not workspace members).
+     * @param {any} list - `sessions.list` snapshot.
+     * @param {readonly object[]} workspaces - `workspaces.list.items`.
+     * @param {string} sessionId - session id.
+     * @returns {object|undefined} the workspace item.
+     */
+    function workspaceForSession(list, workspaces, sessionId) {
+      const items = Array.isArray(workspaces) ? workspaces : []
+      let id = sessionId
+      for (let hops = 0; hops <= MAX_DEPTH && typeof id === 'string'; hops += 1) {
+        const found = items.find(item => Array.isArray(item?.sessionIds) && item.sessionIds.includes(id))
+        if (found) return found
+        id = subagentParentOf(list, id)
+      }
+      return undefined
+    }
+
+    /**
      * Direct subagents of one session, in catalog order, with what a row needs.
      * The label comes from the parent's catalog (the name the delegation gave the
      * child), then the child's own title.
@@ -2280,6 +2319,9 @@ window.__ModuleLoader__.load({
       'sa.duration.minutes': '{minutes}分{seconds}秒',
       'sa.duration.hours': '{hours}小时{minutes}分{seconds}秒',
       'sa.duration.days': '{days}天{hours}小时',
+      'ws.label': '工作区：{name}',
+      'ws.reveal': '点击在左侧列表中定位',
+      'ws.revealLabel': '在左侧列表中定位，工作区 {name}',
       'copy.name': '名称',
       'copy.id': 'ID',
       'copy.nameTitle': '复制子会话名称：{value}',
@@ -2449,6 +2491,9 @@ window.__ModuleLoader__.load({
       'sa.duration.minutes': '{minutes}m {seconds}s',
       'sa.duration.hours': '{hours}h {minutes}m {seconds}s',
       'sa.duration.days': '{days}d {hours}h',
+      'ws.label': 'Workspace: {name}',
+      'ws.reveal': 'Click to show it in the list',
+      'ws.revealLabel': 'Show in the list, workspace {name}',
       'copy.name': 'Name',
       'copy.id': 'ID',
       'copy.nameTitle': 'Copy subagent name: {value}',
@@ -2749,7 +2794,9 @@ window.__ModuleLoader__.load({
     .dsm-sa-root-switcher{margin-left:6px}
     .dsm-sa-trigger,.dsm-sa-switcher{display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:3px 2px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
     .dsm-sa-trigger:hover,.dsm-sa-trigger:focus-visible{color:var(--dsw-alias-label-primary);outline:none}
-    .dsm-sa-trigger-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px}
+    .dsm-sa-trigger-icon{position:relative;display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px}
+    .dsm-sa-trigger-icon>svg:first-child{display:none}
+    .dsm-sa-trigger-icon[data-running="false"]>svg:first-child{display:block}
     .dsm-sa-switcher{min-width:0;max-width:244px;font-size:14px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-primary)}
     .dsm-sa-switcher[data-ancestor="true"]{font-weight:400;color:var(--dsw-alias-label-tertiary)}
     .dsm-sa-switcher-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2758,7 +2805,7 @@ window.__ModuleLoader__.load({
     .dsm-sa-node{position:relative;min-width:0}
     .dsm-sa-row{position:relative;display:flex;align-items:flex-start;gap:4px;width:100%;box-sizing:border-box;padding:0 2px;border-radius:var(--dsw-radius-md);color:var(--dsw-alias-label-primary);font-size:12px;line-height:17px;cursor:pointer;outline:none}
     .dsm-sa-row[aria-disabled="true"]{cursor:default}
-    .dsm-sa-click{display:flex;flex:1;align-items:flex-start;gap:7px;min-width:0;padding:5px 6px;border-radius:var(--dsw-radius-md)}
+    .dsm-sa-click{position:relative;display:flex;flex:1;align-items:flex-start;gap:7px;min-width:0;padding:4px 6px;border-radius:var(--dsw-radius-md)}
     .dsm-sa-row:hover>.dsm-sa-click,.dsm-sa-row:focus-visible>.dsm-sa-click{background:var(--dsw-alias-interactive-bg-hover,color-mix(in srgb,currentColor 8%,transparent))}
     .dsm-sa-dot{display:inline-flex;flex:none;align-items:center;justify-content:center;width:14px;height:17px}
     .dsm-sa-disclosure,.dsm-sa-disclosure-space{flex:none;width:14px;height:27px}
@@ -2768,12 +2815,13 @@ window.__ModuleLoader__.load({
     .dsm-sa-content{display:flex;flex:1;flex-direction:column;gap:1px;min-width:0}
     .dsm-sa-label{font-size:13px;overflow-wrap:anywhere}
     .dsm-sa-label[data-current="true"]{font-weight:500}
-    .dsm-sa-meta{color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere}
-    .dsm-sa-model{display:flex;align-items:center;gap:5px;min-width:0;margin-top:1px}
+    .dsm-sa-meta{display:flex;align-items:center;gap:5px;min-width:0;color:var(--dsw-alias-label-tertiary)}
+    .dsm-sa-name{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dsm-sa-sep{flex:none}
     .dsm-sa-model-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-size:11px;font-variant-numeric:tabular-nums}
     .dsm-sa-model-name[data-unknown="true"]{color:var(--dsw-alias-label-tertiary)}
-    .dsm-sa-copies{display:none;gap:2px;margin-left:auto;flex:none}
-    .dsm-sa-row:hover .dsm-sa-copies,.dsm-sa-row:focus-within .dsm-sa-copies{display:inline-flex}
+    .dsm-sa-copies{position:absolute;top:50%;right:34px;transform:translateY(-50%);display:inline-flex;gap:2px;padding:2px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);box-shadow:0 0 0 0.5px var(--dsw-alias-border-l2);visibility:hidden}
+    .dsm-sa-row:hover .dsm-sa-copies,.dsm-sa-row:focus-within .dsm-sa-copies{visibility:visible}
     .dsm-sa-metrics{display:grid;grid-template-rows:17px 15px;flex:none;color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:15px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
     .dsm-sa-metrics>span:first-child{line-height:17px}
     .dsm-sa-side{box-sizing:border-box;flex:none;width:28px;height:28px;margin:-1px -4px 0 0}
@@ -2784,6 +2832,10 @@ window.__ModuleLoader__.load({
     .dsm-sa-notice{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
     .dsm-sa-notice[data-error="true"]{color:var(--dsw-alias-state-error-primary)}
     .dsm-sa-retry{padding:3px 5px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:inherit;font:inherit;cursor:pointer}
+    @container (max-width:460px){.dsm-sa-count{display:none}.dsm-sa-trigger{width:28px;height:28px;padding:0;justify-content:center}.dsm-sa-trigger-icon>svg:first-child{display:block}.dsm-sa-trigger-icon>:not(:first-child){position:absolute;right:-3px;top:-3px;transform:scale(.6)}.dsm-model-badge-name,.dsm-ws-badge-name{display:none}}
+    .dsm-ws-badge{display:inline-flex;align-items:center;gap:4px;max-width:200px;min-width:0;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
+    .dsm-ws-badge:hover,.dsm-ws-badge:focus-visible{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover,color-mix(in srgb,currentColor 8%,transparent));outline:none}
+    .dsm-ws-badge-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .dsm-model-badge{display:inline-flex;align-items:center;gap:5px;max-width:260px;min-width:0;padding:0 2px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
     .dsm-model-badge-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .dsm-effort{padding:0 5px;border-radius:var(--dsw-radius-xs);font-size:11px;line-height:16px;color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb,currentColor 16%,transparent);flex:none;white-space:nowrap}
@@ -3087,7 +3139,7 @@ window.__ModuleLoader__.load({
       workspaceLabel, workspaceHint, snippet, titleMatch, canReorder = false, priority, flat = false,
       pinnedSection = false, selectable = false, selected = false, onToggleSelect, toggleLabel,
       groupedByPriority = false, folderOptions, scope, onFolderOver, onAssignFolder, bulkMulti = false,
-      stacked = false, model, subagents = NO_SUBAGENTS,
+      stacked = false, model, subagents = NO_SUBAGENTS, registerRow,
     }) {
       const [menuOpen, setMenuOpen] = useState(false)
       const [subsOpen, setSubsOpen] = useState(false)
@@ -3180,6 +3232,7 @@ window.__ModuleLoader__.load({
       }, priority.toUpperCase())
       const hasSub = workspaceNode !== null || snippetNode !== null
       const row = h('div', {
+        ref: registerRow === undefined ? undefined : (element) => registerRow(sessionId, element),
         className: 'dsm-row',
         'data-priority': priority,
         role: 'treeitem',
@@ -3751,6 +3804,8 @@ window.__ModuleLoader__.load({
             'aria-current': current || undefined,
             ...(expandable ? { 'aria-expanded': open } : {}),
             'data-dsm-subagent': entry.id,
+            title: [label, [name, mode, activity].filter(Boolean).join(' · '), model ? `${model.provider}/${model.model}${model.effort ? ` · ${model.effort}` : ''}` : null]
+              .filter(Boolean).join('\n'),
             onClick: openChild,
             onKeyDown: (event) => {
               if (event.target !== event.currentTarget) return
@@ -3775,16 +3830,18 @@ window.__ModuleLoader__.load({
               h(StateDot, { state: entry.activity === 'running' ? 'ongoing' : completed ? 'done' : 'idle' })),
             h('span', { className: 'dsm-sa-content' },
               h('span', { className: 'dsm-sa-label', 'data-current': String(current) }, label),
-              h('span', { className: 'dsm-sa-meta' }, [name, mode, activity].filter(Boolean).join(' · ')),
-              h('span', { className: 'dsm-sa-model' },
+              h('span', { className: 'dsm-sa-meta' },
+                h('span', { className: 'dsm-sa-name' }, name),
+                h('span', { className: 'dsm-sa-sep', 'aria-hidden': 'true' }, '·'),
                 model === undefined
                   ? h('span', { className: 'dsm-sa-model-name', 'data-unknown': 'true' }, t('subagents.modelUnknown'))
                   : h(React.Fragment, null,
-                    h('span', { className: 'dsm-sa-model-name', title: `${model.provider}/${model.model}` }, model.model),
-                    h('span', { className: 'dsm-effort', 'data-default': String(model.effort === undefined) }, model.effort ?? t('effort.default'))),
-                h('span', { className: 'dsm-sa-copies' },
-                  h(CopyChip, { value: name, label: t('copy.name'), title: t('copy.nameTitle', { value: name }), t }),
-                  h(CopyChip, { value: entry.id, label: t('copy.id'), title: t('copy.idTitle', { value: entry.id }), t })))),
+                    h('span', { className: 'dsm-sa-model-name' }, shortModel(model.model)),
+                    h('span', { className: 'dsm-effort', 'data-default': String(model.effort === undefined) }, model.effort ?? t('effort.default'))))),
+            // Floats over the metrics on hover, so revealing it never reflows the row.
+            h('span', { className: 'dsm-sa-copies' },
+              h(CopyChip, { value: name, label: t('copy.name'), title: t('copy.nameTitle', { value: name }), t }),
+              h(CopyChip, { value: entry.id, label: t('copy.id'), title: t('copy.idTitle', { value: entry.id }), t })),
             tokens === undefined && duration === undefined ? null : h('span', { className: 'dsm-sa-metrics' },
               h('span', null, tokens === undefined ? '' : t('sa.tokens', { value: formatTokenCount(tokens) })),
               h('span', null, duration === undefined ? '' : formatDuration(duration, t))),
@@ -3943,8 +4000,9 @@ window.__ModuleLoader__.load({
         },
       }, variant === 'switcher'
         ? [h('span', { key: 'title', className: 'dsm-sa-switcher-title' }, switcherTitle), h(IconChevronsUpDownOutlineRegular, { key: 'icon', size: 14 })]
-        : [h('span', { key: 'icon', className: 'dsm-sa-trigger-icon' },
-          running > 0 ? h(StateDot, { state: 'ongoing' }) : h(IconQueueOutlineRegular, { size: 14 })),
+        : [h('span', { key: 'icon', className: 'dsm-sa-trigger-icon', 'data-running': String(running > 0) },
+          h(IconQueueOutlineRegular, { size: 14 }),
+          running > 0 ? h(StateDot, { state: 'ongoing' }) : null),
         h('span', { key: 'count', className: 'dsm-sa-count' }, countLabel)])
 
       const panel = open && place !== null ? h('div', {
@@ -4050,6 +4108,40 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The workspace the current session belongs to (a subagent shows its root's),
+     * at the head of the header actions. Clicking it shows the session in the
+     * left list; the tooltip carries the workspace path.
+     * @param {object} props - session-scoped slot props plus `workspaceList` and `revealSession`.
+     * @returns {object|null}
+     */
+    function SessionWorkspaceBadge({ sessionId, useSessions, useWorkspaces, workspaceList, revealSession, t }) {
+      const list = useSessions(snapshot => snapshot)
+      const fromHook = typeof useWorkspaces === 'function' ? useWorkspaces(snapshot => snapshot) : undefined
+      const fromStore = useSyncExternalStore(
+        workspaceList?.subscribe ?? NOOP_SUBSCRIBE,
+        workspaceList?.getSnapshot ?? NOOP_SNAPSHOT,
+      )
+      const items = (fromHook ?? fromStore)?.items
+      const workspace = useMemo(() => workspaceForSession(list, items, sessionId), [list, items, sessionId])
+      if (!workspace) return null
+      const label = workspace.title || workspaceLabelOf(workspace.path)
+      const tip = [t('ws.label', { name: label }), workspace.path, t('ws.reveal')].filter(Boolean).join('\n')
+      return h('button', {
+        type: 'button',
+        className: 'dsm-ws-badge',
+        title: tip,
+        'aria-label': t('ws.revealLabel', { name: label }),
+        'data-dsm-session-workspace': workspace.workspaceId,
+        onClick: (event) => { event.stopPropagation(); revealSession?.({ workspaceId: workspace.workspaceId, sessionId }) },
+      },
+      h(IconFolderCloseRegular, { size: 14 }),
+      h('span', { className: 'dsm-ws-badge-name' }, label))
+    }
+
+    const NOOP_SUBSCRIBE = () => () => {}
+    const NOOP_SNAPSHOT = () => undefined
+
+    /**
      * The model and reasoning effort the current session runs on, beside the
      * header actions. Hidden while the Host has not recorded a selection.
      * @param {object} props - session-scoped slot props.
@@ -4064,7 +4156,7 @@ window.__ModuleLoader__.load({
         title: t('hover.model', { model: `${model.provider}/${text}` }),
         'data-dsm-session-model': sessionId,
       },
-      h('span', { className: 'dsm-model-badge-name' }, model.model),
+      h('span', { className: 'dsm-model-badge-name' }, shortModel(model.model)),
       h('span', { className: 'dsm-effort', 'data-default': String(model.effort === undefined) }, model.effort ?? t('effort.default')))
     }
 
@@ -4104,7 +4196,7 @@ window.__ModuleLoader__.load({
         renameSession, forkSession, insertSessionBefore, insertWorkspaceBefore, copyText,
         pickDirectory, createWorkspace, searchSessions, searchResultLimit, useNotice, clearNotice,
         setPriority, setPriorities, priorityStore, folderStore, folderActions, watchRows,
-        autoArchiveStore, setAutoArchive, archiveMany, setTakeover, reportNotice,
+        autoArchiveStore, setAutoArchive, archiveMany, setTakeover, reportNotice, revealSource,
       } = props
 
       const list = useSessions(snapshot => snapshot)
@@ -4694,6 +4786,13 @@ window.__ModuleLoader__.load({
         return cache
       }, [folderEntries, folderReadonly, workspaceMembers])
 
+      // Row elements by session id, so a header "show in list" can scroll to one
+      // without querying host DOM.
+      const rowElements = useMemo(() => new Map(), [])
+      const registerRow = useCallback((id, element) => {
+        if (element) rowElements.set(id, element)
+        else rowElements.delete(id)
+      }, [rowElements])
       const renderRow = useCallback((sessionId, accountId, accountOrder, layout = {}) => {
         const {
           flat = false, pinnedSection = false,
@@ -4731,6 +4830,7 @@ window.__ModuleLoader__.load({
           bulkMulti,
           model: modelIndex.get(sessionId),
           subagents: subagentIndex.get(sessionId),
+          registerRow,
           onDragStart: setDrag,
           // `dragover` fires continuously: only a *changed* cell may re-render.
           // A pointer stream is continuous: only a *changed* cell may re-render.
@@ -4762,7 +4862,7 @@ window.__ModuleLoader__.load({
       // `priorities` belongs here: without it the memoised renderer kept writing the
       // labels it saw when it was created, so a new P1–P4 choice only showed up after
       // something else rebuilt the rows.
-      }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder, modelIndex, subagentIndex,
+      }, [archivedSet, bulk, byId, currentId, drag, dropTarget, folderOptionsCache, handleAssignFolder, modelIndex, registerRow, subagentIndex,
         handleDragEnd, handleDragOverMulti, handleDragOverRow, handleFolderOver, handleToggleSelect, move, open,
         pinnedSet, priorities, selectAction, statusCache, statusOfId, t, workspaceLabelBySession, workspaceOf])
 
@@ -5001,6 +5101,19 @@ window.__ModuleLoader__.load({
 
       const viewKey = searching ? 'search' : attentionOnly ? 'attention' : priorityView ? 'priority' : 'tree'
       const bodyRef = useRef(null)
+      useEffect(() => {
+        if (!revealSource) return undefined
+        return revealSource.subscribe(() => {
+          const target = revealSource.getSnapshot()
+          if (!target) return
+          setQuery('')
+          setPriorityView(false)
+          setProjectsCollapsed(false)
+          if (typeof target.workspaceId === 'string') setCollapsed(state => ({ ...state, [target.workspaceId]: false }))
+          expandSidebar?.()
+          window.setTimeout(() => rowElements.get(target.sessionId)?.scrollIntoView?.({ block: 'nearest' }), 60)
+        })
+      }, [revealSource, rowElements])
       useEffect(() => {
         const host = bodyRef.current
         if (!host) return
@@ -5526,6 +5639,8 @@ window.__ModuleLoader__.load({
       const folders = folderStore(require)
       const autoArchive = autoArchiveStore(require)
       const takeover = takeoverStore(require)
+      // One-shot request from the header workspace label to show a session in the list.
+      const reveal = observable(null)
       // The host half has no injected `t`: bind the namespace once so failure
       // notices follow the active language instead of always speaking Chinese.
       const hostT = ctx.locale.bind(NS)
@@ -5730,6 +5845,7 @@ window.__ModuleLoader__.load({
               priorities.set(next)
             },
             hooks: { notice: noticeSource, jobs: jobsSource },
+            revealSource: reveal,
           }),
         }, SessionManagerRegion)
 
@@ -5839,6 +5955,18 @@ window.__ModuleLoader__.load({
         registrant: '@pianner/dsh-session-manager',
         inject: () => ({ actions: subagentActions }),
       }, SubagentLineage]])), 'dsh-session-manager: subagent lineage')
+      ctx.effect(() => ctx.slots.inject('conversation.session.header.actions', () => tryRegister('session workspace', [[{
+        name: 'conversation.session.header.actions',
+        id: 'dsh-session-manager-workspace',
+        // Ahead of the preset label (-10): the workspace reads as part of the title.
+        order: -20,
+        locale: NS,
+        registrant: '@pianner/dsh-session-manager',
+        inject: () => ({
+          workspaceList: ctx.workspaces?.list,
+          revealSession: target => reveal.set({ ...target, at: Date.now() }),
+        }),
+      }, SessionWorkspaceBadge]])), 'dsh-session-manager: session workspace')
       ctx.effect(() => ctx.slots.inject('conversation.session.header.actions', () => tryRegister('session model', [[{
         name: 'conversation.session.header.actions',
         id: 'dsh-session-manager-model',

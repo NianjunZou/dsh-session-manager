@@ -54,6 +54,8 @@ import {
   activeDurationMs,
   durationParts,
   subagentParentOf,
+  shortModel,
+  workspaceForSession,
   buildRollup,
   computeGroups,
   descendantsOf,
@@ -1110,4 +1112,22 @@ test('subagentParentOf prefers the parent catalog over the row', () => {
   assert.equal(subagentParentOf(list, 'c'), 'p')
   assert.equal(subagentParentOf({ byId: list.byId }, 'c'), 'stale')
   assert.equal(subagentParentOf(list, 'r'), undefined)
+})
+
+test('shortModel drops the gateway route suffix only', () => {
+  assert.equal(shortModel('DeepSeek-V4.1-Flash-acme-relay'), 'DeepSeek-V4.1-Flash')
+  assert.equal(shortModel('Opus 5.5-acme-relay'), 'Opus 5.5')
+  assert.equal(shortModel('deepseek-v4-flash'), 'deepseek-v4-flash')
+  assert.equal(shortModel('x-relay'), 'x-relay', 'a bare suffix is not stripped')
+})
+
+test('workspaceForSession resolves a subagent through its root', () => {
+  const list = {
+    byId: { root: { id: 'root' }, kid: { id: 'kid', origin: 'subagent', parentId: 'root' }, grand: { id: 'grand', origin: 'subagent', parentId: 'kid' } },
+    projectionsBySession: {},
+  }
+  const workspaces = [{ workspaceId: 'w', title: 'W', sessionIds: ['root'] }]
+  assert.equal(workspaceForSession(list, workspaces, 'grand')?.workspaceId, 'w')
+  assert.equal(workspaceForSession(list, workspaces, 'root')?.workspaceId, 'w')
+  assert.equal(workspaceForSession(list, workspaces, 'lost'), undefined)
 })

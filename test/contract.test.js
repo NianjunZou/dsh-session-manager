@@ -1921,7 +1921,9 @@ test('the rebuilt catalog shadows the native seats and shows each child with its
   const rows = findAll(tree, node => node.props?.className === 'dsm-sa-row')
   assert.deepEqual(rows.map(row => row.props['data-dsm-subagent']), ['child', 'done', 'old'], 'catalog order')
   const first = textsOf(rows[0])
-  for (const want of ['stage one', 'stage-1 · sa.mode.continuable · sa.activity.running', 'DeepSeek-V4.1-Flash', 'high']) assert.ok(first.includes(want), want)
+  for (const want of ['stage one', 'stage-1', 'DeepSeek-V4.1-Flash', 'high']) assert.ok(first.includes(want), want)
+  // Two text lines: mode and activity live in the row tooltip, not a third line.
+  assert.equal(rows[0].props.title, 'stage one\nstage-1 · sa.mode.continuable · sa.activity.running\ngateway-a/DeepSeek-V4.1-Flash · high')
   assert.ok(first.some(text => text.startsWith('sa.tokens:') && text.includes('48')), 'tokens shown')
   assert.ok(textsOf(rows[1]).includes('effort.default'), 'a missing effort says default')
   assert.ok(textsOf(rows[2]).includes('subagents.modelUnknown'))
@@ -1954,4 +1956,28 @@ test('a child session gets the switcher and its own model badge', () => {
   const badgeTree = applied.react.render(badge.Component, slotProps(applied, data, { sessionId: 'child' })).tree
   assert.deepEqual(textsOf(badgeTree), ['DeepSeek-V4.1-Flash', 'high'])
   assert.equal(applied.react.render(badge.Component, slotProps(applied, data, { sessionId: 'w1-b' })).tree, null)
+})
+
+test('the header names the session workspace, a subagent its root workspace, and a click reveals it', () => {
+  const applied = applyPlugin()
+  const data = subagentFixture()
+  const badge = applied.registrations.find(entry => entry.options.id === 'dsh-session-manager-workspace')
+  assert.ok(badge, 'registered in the header actions')
+  assert.ok(badge.options.order < -10, 'ahead of the preset label')
+  const face = badge.options.inject('child')
+  const reveals = []
+  const props = slotProps(applied, data, {
+    sessionId: 'child',
+    useWorkspaces: selector => selector(data.workspaces),
+    ...face,
+    revealSession: target => { reveals.push(target); face.revealSession(target) },
+  })
+  const tree = applied.react.render(badge.Component, props).tree
+  assert.ok(textsOf(tree).includes('alpha'), 'a subagent shows its root session workspace')
+  assert.match(tree.props.title, /\/tmp\/alpha/)
+  tree.props.onClick({ stopPropagation() {} })
+  assert.equal(JSON.stringify(reveals), JSON.stringify([{ workspaceId: 'w1', sessionId: 'child' }]))
+  assert.equal(applied.injected.revealSource.getSnapshot().workspaceId, 'w1', 'the list receives the request')
+  const orphan = applied.react.render(badge.Component, { ...props, sessionId: 'nowhere' }).tree
+  assert.equal(orphan, null, 'no badge for a session outside every workspace')
 })

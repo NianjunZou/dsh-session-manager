@@ -1336,6 +1336,45 @@ export function modelText(selection) {
 }
 
 /**
+ * Route suffixes a gateway appends to every model id it serves. They repeat
+ * on every row, so lists drop them and keep the full id in the tooltip.
+ */
+export const MODEL_ROUTE_SUFFIXES = Object.freeze([/-[a-z0-9]+-relay$/i])
+
+/**
+ * A model id without its gateway route suffix.
+ * @param {string} model - model id.
+ * @returns {string}
+ */
+export function shortModel(model) {
+  let out = String(model ?? '')
+  for (const suffix of MODEL_ROUTE_SUFFIXES) {
+    const trimmed = out.replace(suffix, '')
+    if (trimmed !== '' && trimmed !== out) { out = trimmed; break }
+  }
+  return out
+}
+
+/**
+ * The workspace a session belongs to: its own membership, or the membership
+ * of its root ancestor for a subagent (children are not workspace members).
+ * @param {any} list - `sessions.list` snapshot.
+ * @param {readonly object[]} workspaces - `workspaces.list.items`.
+ * @param {string} sessionId - session id.
+ * @returns {object|undefined} the workspace item.
+ */
+export function workspaceForSession(list, workspaces, sessionId) {
+  const items = Array.isArray(workspaces) ? workspaces : []
+  let id = sessionId
+  for (let hops = 0; hops <= MAX_DEPTH && typeof id === 'string'; hops += 1) {
+    const found = items.find(item => Array.isArray(item?.sessionIds) && item.sessionIds.includes(id))
+    if (found) return found
+    id = subagentParentOf(list, id)
+  }
+  return undefined
+}
+
+/**
  * Direct subagents of one session, in catalog order, with what a row needs.
  * The label comes from the parent's catalog (the name the delegation gave the
  * child), then the child's own title.
