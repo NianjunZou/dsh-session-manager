@@ -97,7 +97,7 @@ remaining verification gaps are in [`docs/ACCEPTANCE-0.2.0.md`](docs/ACCEPTANCE-
 npm run build         # regenerate client/client.js from src/client/{core,body}.js
 npm test              # 112 lanes: core, contract, bundle static assertions, a11y
 npm run verify        # build + node --check + npm test + plugin-contract check
-DSH_SOURCE=~/deepseek-harness npm run verify:align   # slot / Menu / StateDot / icons / host APIs
+DSH_SOURCE=<dsh-checkout> npm run verify:align   # slot / Menu / StateDot / icons / host APIs
 ```
 
 `client/client.js` is generated but committed, so the published package needs no consumer build.

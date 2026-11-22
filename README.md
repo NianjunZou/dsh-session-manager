@@ -151,7 +151,7 @@ peer 范围 `>=0.2.0-alpha.0 <0.3.0-0` 按 DSH 运行时的 `includePrerelease` 
 npm run build         # 由 src/client/{core,body}.js 生成 client/client.js（单文件 client 入口）
 npm test              # 152 条 lane；未设 DSH_SOURCE 时 13 条 alignment 自跳过
 npm run verify        # build + node --check + npm test + 插件契约检查
-DSH_SOURCE=~/deepseek-harness npm run verify:align   # 对着宿主源码校验 slot / Menu / StateDot / 图标 / API
+DSH_SOURCE=<dsh-checkout> npm run verify:align   # 对着宿主源码校验 slot / Menu / StateDot / 图标 / API
 ```
 
 真浏览器交互验收由维护者在本地台架（真 React + 真 DOM + 真鼠标）完成，台架不随仓库分发；
