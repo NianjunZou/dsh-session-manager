@@ -1,6 +1,6 @@
 {
   "name": "@pianner/dsh-session-manager",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Codex-style left session manager for DSH workspaces.",
   "type": "module",
   "main": "src/index.js",
