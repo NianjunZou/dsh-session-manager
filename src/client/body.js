@@ -1041,7 +1041,7 @@ const css = `
 .dsm-sa-node{position:relative;min-width:0}
 .dsm-sa-row{position:relative;display:flex;align-items:flex-start;gap:4px;width:100%;box-sizing:border-box;padding:0 2px;border-radius:var(--dsw-radius-md);color:var(--dsw-alias-label-primary);font-size:12px;line-height:17px;cursor:pointer;outline:none}
 .dsm-sa-row[aria-disabled="true"]{cursor:default}
-.dsm-sa-click{position:relative;display:flex;flex:1;align-items:flex-start;gap:7px;min-width:0;padding:4px 6px;border-radius:var(--dsw-radius-md)}
+.dsm-sa-click{display:flex;flex:1;align-items:flex-start;gap:7px;min-width:0;padding:4px 6px;border-radius:var(--dsw-radius-md)}
 .dsm-sa-row:hover>.dsm-sa-click,.dsm-sa-row:focus-visible>.dsm-sa-click{background:var(--dsw-alias-interactive-bg-hover,color-mix(in srgb,currentColor 8%,transparent))}
 .dsm-sa-dot{display:inline-flex;flex:none;align-items:center;justify-content:center;width:14px;height:17px}
 .dsm-sa-disclosure,.dsm-sa-disclosure-space{flex:none;width:14px;height:27px}
@@ -1049,15 +1049,16 @@ const css = `
 .dsm-sa-disclosure svg{transition:transform 120ms ease}
 .dsm-sa-disclosure[data-open="true"] svg{transform:rotate(90deg)}
 .dsm-sa-content{display:flex;flex:1;flex-direction:column;gap:1px;min-width:0}
-.dsm-sa-label{font-size:13px;overflow-wrap:anywhere}
+.dsm-sa-label{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
 .dsm-sa-label[data-current="true"]{font-weight:500}
 .dsm-sa-meta{display:flex;align-items:center;gap:5px;min-width:0;color:var(--dsw-alias-label-tertiary)}
 .dsm-sa-name{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsm-sa-sep{flex:none}
 .dsm-sa-model-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-size:11px;font-variant-numeric:tabular-nums}
 .dsm-sa-model-name[data-unknown="true"]{color:var(--dsw-alias-label-tertiary)}
-.dsm-sa-copies{position:absolute;top:50%;right:34px;transform:translateY(-50%);display:inline-flex;gap:2px;padding:2px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);box-shadow:0 0 0 0.5px var(--dsw-alias-border-l2);visibility:hidden}
-.dsm-sa-row:hover .dsm-sa-copies,.dsm-sa-row:focus-within .dsm-sa-copies{visibility:visible}
+.dsm-sa-title{display:flex;align-items:center;gap:6px;min-width:0}
+.dsm-sa-copies{display:none;flex:none;gap:2px}
+.dsm-sa-row:hover .dsm-sa-copies,.dsm-sa-row:focus-within .dsm-sa-copies{display:inline-flex}
 .dsm-sa-metrics{display:grid;grid-template-rows:17px 15px;flex:none;color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:15px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
 .dsm-sa-metrics>span:first-child{line-height:17px}
 .dsm-sa-side{box-sizing:border-box;flex:none;width:28px;height:28px;margin:-1px -4px 0 0}
@@ -2065,7 +2066,13 @@ function SubagentRows(props) {
         h('span', { className: 'dsm-sa-dot' },
           h(StateDot, { state: entry.activity === 'running' ? 'ongoing' : completed ? 'done' : 'idle' })),
         h('span', { className: 'dsm-sa-content' },
-          h('span', { className: 'dsm-sa-label', 'data-current': String(current) }, label),
+          // The copy buttons sit inline after the label text: they take the
+          // end of the label's last line, never the metrics column.
+          h('span', { className: 'dsm-sa-title' },
+            h('span', { className: 'dsm-sa-label', 'data-current': String(current) }, label),
+            h('span', { className: 'dsm-sa-copies' },
+              h(CopyChip, { value: name, label: t('copy.name'), title: t('copy.nameTitle', { value: name }), t }),
+              h(CopyChip, { value: entry.id, label: t('copy.id'), title: t('copy.idTitle', { value: entry.id }), t }))),
           h('span', { className: 'dsm-sa-meta' },
             h('span', { className: 'dsm-sa-name' }, name),
             h('span', { className: 'dsm-sa-sep', 'aria-hidden': 'true' }, '·'),
@@ -2074,10 +2081,6 @@ function SubagentRows(props) {
               : h(React.Fragment, null,
                 h('span', { className: 'dsm-sa-model-name' }, shortModel(model.model)),
                 h('span', { className: 'dsm-effort', 'data-default': String(model.effort === undefined) }, model.effort ?? t('effort.default'))))),
-        // Floats over the metrics on hover, so revealing it never reflows the row.
-        h('span', { className: 'dsm-sa-copies' },
-          h(CopyChip, { value: name, label: t('copy.name'), title: t('copy.nameTitle', { value: name }), t }),
-          h(CopyChip, { value: entry.id, label: t('copy.id'), title: t('copy.idTitle', { value: entry.id }), t })),
         tokens === undefined && duration === undefined ? null : h('span', { className: 'dsm-sa-metrics' },
           h('span', null, tokens === undefined ? '' : t('sa.tokens', { value: formatTokenCount(tokens) })),
           h('span', null, duration === undefined ? '' : formatDuration(duration, t))),
