@@ -1304,9 +1304,14 @@ function subagentCopies(entry, t) {
  * @param {object} props - `entries`, `currentId`, `onOpen`, `t`.
  * @returns {object} the group.
  */
-function SubagentList({ entries, currentId, onOpen, t }) {
+function SubagentList({ parentId, entries, currentId, onOpen, t }) {
   return h('div', { className: 'dsm-subs-list', role: 'group', 'aria-label': t('subagents.list') },
     entries.map((entry) => {
+      // A child opens through its direct-parent address, as the native catalog
+      // does: a bare id only resolves while the child still has a live scope.
+      const target = typeof entry.mode === 'string' && entry.mode !== 'external' && entry.mode !== 'unknown'
+        ? { parentSessionId: parentId, childSessionId: entry.id, mode: entry.mode }
+        : entry.id
       const model = modelText(entry.model)
       const tip = [entry.label, model ? t('hover.model', { model }) : t('subagents.modelUnknown'), entry.running ? t('subagents.running') : null]
         .filter(Boolean).join('\n')
@@ -1320,9 +1325,9 @@ function SubagentList({ entries, currentId, onOpen, t }) {
         'data-current': String(entry.id === currentId),
         'data-dsm-subagent': entry.id,
         'aria-selected': String(entry.id === currentId),
-        onClick: (event) => { event.stopPropagation(); onOpen(entry.id) },
+        onClick: (event) => { event.stopPropagation(); onOpen(target) },
         onKeyDown: (event) => {
-          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onOpen(entry.id) }
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onOpen(target) }
         },
       },
       h('span', { className: 'dsm-sub-dot', 'aria-hidden': 'true' }),
@@ -1643,7 +1648,7 @@ function SessionRow({
   }),
   )
   if (!subsOpen || runningSubagents.length === 0) return row
-  return h(React.Fragment, null, row, h(SubagentList, { entries: runningSubagents, currentId, onOpen, t }))
+  return h(React.Fragment, null, row, h(SubagentList, { parentId: sessionId, entries: runningSubagents, currentId, onOpen, t }))
 }
 
 // Rows are pure views over stable props: memoising them means a drop marker or a

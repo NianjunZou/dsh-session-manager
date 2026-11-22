@@ -2035,3 +2035,19 @@ test('the catalog keeps the team board seat through the renderer hook prop', () 
   assert.ok(findAll(opened, node => node.type === 'team-board').length === 1, 'the team board renders at the bottom')
   assert.deepEqual(footerCalls.filter(key => key === 'conversation.session.header.actions.subagent.footer').length > 0, true)
 })
+
+test('a running subagent in the left list opens through its parent address', () => {
+  const applied = applyPlugin()
+  const data = subagentFixture()
+  const props = {
+    wide: true, expandSidebar: () => {}, useNotice: selector => selector(undefined),
+    useWorkspaces: selector => selector(data.workspaces), useJobs: selector => selector(data.jobs),
+    ...slotProps(applied, data), ...applied.injected,
+  }
+  const render = () => applied.react.render(applied.registered.Component, props).tree
+  findAll(render(), node => node.props?.className === 'dsm-subs')[0].props.onClick({ stopPropagation() {} })
+  const row = findAll(render(), node => node.props?.className === 'dsm-sub')[0]
+  row.props.onClick({ stopPropagation() {} })
+  assert.equal(JSON.stringify(applied.calls.filter(call => call[0] === 'openSession').at(-1)),
+    JSON.stringify(['openSession', { parentSessionId: 'w1-a', childSessionId: 'child', mode: 'continuable' }]))
+})
