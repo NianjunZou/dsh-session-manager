@@ -278,6 +278,12 @@ function applyPlugin({ withJobs = true } = {}) {
       insertSessionBefore: (w, s, before) => calls.push(['insertSessionBefore', w, s, before]),
       insertBefore: (w, before) => calls.push(['insertBefore', w, before]),
       create: input => { calls.push(['createWorkspace', input.path]); return Promise.resolve({}) },
+      // A class instance like the Host source: its methods need `this`.
+      list: new (class {
+        constructor() { this.snapshot = fixtures().workspaces; this.listeners = new Set() }
+        getSnapshot() { return this.snapshot }
+        subscribe(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener) }
+      })(),
     },
   }
   exports.apply(ctx)
@@ -1968,6 +1974,10 @@ test('the header names the session workspace, a subagent its root workspace, and
   assert.ok(badge, 'registered in the header actions')
   assert.ok(badge.options.order < -10, 'ahead of the preset label')
   const face = badge.options.inject('child')
+  // Without the global useWorkspaces hook the badge reads the Host source,
+  // whose methods depend on `this`.
+  const fallback = applied.react.render(badge.Component, slotProps(applied, data, { sessionId: 'child', ...face })).tree
+  assert.ok(textsOf(fallback).includes('alpha'), 'the Host workspace source is read bound')
   const reveals = []
   const props = slotProps(applied, data, {
     sessionId: 'child',

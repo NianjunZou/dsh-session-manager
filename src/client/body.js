@@ -4202,7 +4202,12 @@ function apply(ctx) {
     locale: NS,
     registrant: '@pianner/dsh-session-manager',
     inject: () => ({
-      workspaceList: ctx.workspaces?.list,
+      // Bound: the Host source keeps its state on `this`, so a detached
+      // `subscribe` threw inside the badge and the badge never rendered.
+      workspaceList: ctx.workspaces?.list === undefined ? undefined : {
+        getSnapshot: () => ctx.workspaces.list.getSnapshot(),
+        subscribe: listener => ctx.workspaces.list.subscribe(listener),
+      },
       revealSession: target => reveal.set({ ...target, at: Date.now() }),
     }),
   }, SessionWorkspaceBadge]])), 'dsh-session-manager: session workspace')
