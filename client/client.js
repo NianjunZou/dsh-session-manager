@@ -2161,6 +2161,12 @@ window.__ModuleLoader__.load({
       'subagents.running': '执行中',
       'hover.model': '模型：{model}',
       'lineage.models': '子会话模型与思考强度',
+      'copy.name': '名称',
+      'copy.id': 'ID',
+      'copy.nameTitle': '复制子会话名称：{value}',
+      'copy.idTitle': '复制子会话 ID：{value}',
+      'copy.done': '已复制',
+      'copy.failed': '复制失败',
       'status.subagentJobs': '{n} 个子会话的后台任务执行中',
       'status.jobs': '{n} 个本会话的后台任务执行中',
       'status.unread': '已完成，未读',
@@ -2300,6 +2306,12 @@ window.__ModuleLoader__.load({
       'subagents.running': 'running',
       'hover.model': 'Model: {model}',
       'lineage.models': 'Subagent models and reasoning effort',
+      'copy.name': 'Name',
+      'copy.id': 'ID',
+      'copy.nameTitle': 'Copy subagent name: {value}',
+      'copy.idTitle': 'Copy subagent ID: {value}',
+      'copy.done': 'Copied',
+      'copy.failed': 'Copy failed',
       'status.subagentJobs': '{n} background job(s) from subagents',
       'status.jobs': '{n} background job(s) of this session',
       'status.unread': 'Finished, unread',
@@ -2596,6 +2608,10 @@ window.__ModuleLoader__.load({
     .dsm-lineage-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
     .dsm-lineage-model{flex:none;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
     .dsm-lineage-row[data-unknown="true"] .dsm-lineage-model{color:var(--dsw-alias-label-tertiary)}
+    .dsm-copy{flex:none;padding:0 4px;border:0;border-radius:var(--dsw-radius-xs);font:inherit;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary);background:transparent;cursor:pointer}
+    .dsm-copy:hover,.dsm-copy:focus-visible{color:var(--dsw-alias-label-primary);background:color-mix(in srgb,currentColor 12%,transparent);outline:none}
+    .dsm-copy[data-state="done"]{color:var(--dsw-alias-state-business-primary)}
+    .dsm-copy[data-state="failed"]{color:var(--dsw-alias-state-error,#d33)}
     .dsm-time{flex:0 0 4.5em;width:4.5em;margin-left:6px;text-align:right;white-space:nowrap;font-size:10px;line-height:16px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}
     .dsm-action{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:24px;height:20px;flex:0 0 24px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);opacity:0;cursor:pointer;font:inherit;font-size:13px}
     /* Hover hands the trailing cell to the actions, exactly like the shipped rows:
@@ -2745,6 +2761,75 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Write text to the clipboard: the async API first, then a hidden textarea for
+     * contexts where the API is unavailable (non-secure origins, older shells).
+     *
+     * @param {string} text - the text to copy.
+     * @returns {Promise<void>} resolves once copied, rejects otherwise.
+     */
+    function writeClipboard(text) {
+      if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text)
+      return new Promise((resolve, reject) => {
+        const area = document.createElement('textarea')
+        area.value = text
+        area.setAttribute('readonly', '')
+        area.style.cssText = 'position:fixed;top:-1000px;opacity:0'
+        document.body.appendChild(area)
+        area.select()
+        const ok = document.execCommand?.('copy') === true
+        area.remove()
+        if (ok) resolve(); else reject(new Error('copy unavailable'))
+      })
+    }
+
+    /**
+     * A small text button that copies one value and says so for a moment. Its
+     * events stop at the button, so a copy never opens the row or closes the
+     * surrounding dropdown.
+     *
+     * @param {object} props - `value`, `label`, `title`, `t`.
+     * @returns {object} the button.
+     */
+    function CopyChip({ value, label, title, t }) {
+      const [state, setState] = useState('idle')
+      useEffect(() => {
+        if (state === 'idle') return undefined
+        const timer = window.setTimeout(() => setState('idle'), 1200)
+        return () => window.clearTimeout(timer)
+      }, [state])
+      const stop = (event) => { event.stopPropagation() }
+      return h('button', {
+        type: 'button',
+        className: 'dsm-copy',
+        'data-state': state,
+        title,
+        'aria-label': title,
+        onPointerDown: stop,
+        onKeyDown: stop,
+        onClick: (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          Promise.resolve().then(() => writeClipboard(value)).then(() => setState('done'), () => setState('failed'))
+        },
+      }, state === 'done' ? t('copy.done') : state === 'failed' ? t('copy.failed') : label)
+    }
+
+    /**
+     * Copy buttons for one subagent: its delegation name (falling back to the
+     * label) and its session id.
+     *
+     * @param {object} props - `entry`, `t`.
+     * @returns {object[]} the two buttons.
+     */
+    function subagentCopies(entry, t) {
+      const name = entry.name || entry.label
+      return [
+        h(CopyChip, { key: 'name', value: name, label: t('copy.name'), title: t('copy.nameTitle', { value: name }), t }),
+        h(CopyChip, { key: 'id', value: entry.id, label: t('copy.id'), title: t('copy.idTitle', { value: entry.id }), t }),
+      ]
+    }
+
+    /**
      * The expandable list of a session's direct subagents: what each one is
      * called, whether it runs, and which model and reasoning effort it uses —
      * the one thing the native lineage dropdown does not show.
@@ -2775,7 +2860,8 @@ window.__ModuleLoader__.load({
           },
           h('span', { className: 'dsm-sub-dot', 'aria-hidden': 'true' }),
           h('span', { className: 'dsm-sub-label' }, entry.label),
-          h('span', { className: 'dsm-sub-model' }, model || t('subagents.modelUnknown')))
+          h('span', { className: 'dsm-sub-model' }, model || t('subagents.modelUnknown')),
+          ...subagentCopies(entry, t))
         }))
     }
 
@@ -3422,7 +3508,8 @@ window.__ModuleLoader__.load({
             title: [label, model ? t('hover.model', { model }) : t('subagents.modelUnknown')].join('\n'),
           },
           h('span', { className: 'dsm-lineage-label', style: row.depth > 1 ? { paddingLeft: `${(row.depth - 1) * 12}px` } : undefined }, row.label),
-          h('span', { className: 'dsm-lineage-model' }, model || t('subagents.modelUnknown')))
+          h('span', { className: 'dsm-lineage-model' }, model || t('subagents.modelUnknown')),
+          ...subagentCopies(row, t))
         }))
     }
 

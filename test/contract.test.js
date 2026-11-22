@@ -1847,3 +1847,60 @@ test('filing a row into a folder keeps that folder other sessions', () => {
   const dragging = rowsOf(tree).filter(node => node.props?.['data-dragging'] === 'true')
   assert.deepEqual(dragging, [])
 })
+
+test('a subagent row and the lineage footer copy the name and the session id', async () => {
+  const applied = applyPlugin()
+  const data = fixtures()
+  data.list.byId.child.projectionValues = {
+    modelSelection: { lastUsed: { provider: 'gateway-a', model: 'DeepSeek-V4.1-Flash', reasoningEffort: 'high' } },
+  }
+  data.list.projectionsBySession = {
+    'w1-a': { values: { subagentCatalog: [{ id: 'child', label: 'stage one', name: 'stage-1', mode: 'continuable' }] } },
+  }
+  const props = {
+    wide: true,
+    expandSidebar: () => {},
+    useSessions: selector => selector(data.list),
+    useWorkspaces: selector => selector(data.workspaces),
+    useSessionStatus: selector => selector(data.statuses),
+    useJobs: selector => selector(data.jobs),
+    useNotice: selector => selector(undefined),
+    t: (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key),
+    ...applied.injected,
+  }
+  const render = () => applied.react.render(applied.registered.Component, props).tree
+  const find = (tree, test) => { const hits = []; walk(tree, node => { if (test(node)) hits.push(node) }); return hits }
+  const event = { stopPropagation() {}, preventDefault() {} }
+
+  // The parent row carries the chip; opening it lists the child with its model.
+  const chip = find(render(), node => node.props?.className === 'dsm-subs')[0]
+  assert.ok(chip, 'w1-a has a subagent chip')
+  chip.props.onClick(event)
+  const listed = find(render(), node => node.props?.className === 'dsm-sub')
+  assert.equal(listed.length, 1)
+  const texts = []
+  walk(listed[0], node => { for (const child of node.props?.children || []) if (typeof child === 'string') texts.push(child) })
+  assert.ok(texts.includes('DeepSeek-V4.1-Flash · high'))
+
+  // Copying must not open the child: the copy button stops the click.
+  const copies = find(listed[0], node => node.props?.className === 'dsm-copy')
+  assert.deepEqual(copies.map(node => node.props.children[0]), ['copy.name', 'copy.id'])
+  let stopped = 0
+  const counted = { preventDefault() {}, stopPropagation() { stopped += 1 } }
+  copies[0].props.onClick(counted)
+  copies[1].props.onClick(counted)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(applied.clipboardWrites.slice(-2), ['stage-1', 'child'])
+  assert.equal(stopped, 2, 'each copy click stops at the button')
+  assert.ok(!applied.calls.some(call => call[0] === 'openSession' && call[1] === 'child'))
+
+  // The native dropdown's footer lists the same child from any family member.
+  const footer = applied.registrations.find(entry => entry.options.name === 'conversation.session.header.actions.subagent.footer')
+  assert.ok(footer, 'footer registered')
+  const block = applied.react.render(footer.Component, { ...props, sessionId: 'child' }).tree
+  const rows = find(block, node => node.props?.className === 'dsm-lineage-row')
+  assert.deepEqual(rows.map(row => row.props['data-dsm-subagent']), ['child'])
+  find(rows[0], node => node.props?.className === 'dsm-copy')[1].props.onClick(event)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(applied.clipboardWrites.at(-1), 'child')
+})
