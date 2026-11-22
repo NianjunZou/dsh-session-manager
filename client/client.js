@@ -5973,7 +5973,9 @@ window.__ModuleLoader__.load({
       ctx.effect(() => ctx.slots.inject('conversation.session.header.actions', () => tryRegister('session model', [[{
         name: 'conversation.session.header.actions',
         id: 'dsh-session-manager-model',
-        order: 11,
+        // Right after the preset label (-10): both say how this session runs, and
+        // the subagent count (10) and background tasks (20) stay together after it.
+        order: -5,
         locale: NS,
         registrant: '@pianner/dsh-session-manager',
       }, SessionModelBadge]])), 'dsh-session-manager: session model')

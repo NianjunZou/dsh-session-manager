@@ -1953,6 +1953,9 @@ test('a child session gets the switcher and its own model badge', () => {
   assert.equal(applied.react.render(lineage.Component, rootProps).tree, null, 'a root session has no breadcrumb')
 
   const badge = applied.registrations.find(entry => entry.options.id === 'dsh-session-manager-model')
+  // Between the preset label (-10) and the subagent count (10): never between
+  // the count and background tasks (20).
+  assert.ok(badge.options.order > -10 && badge.options.order < 10, `model badge order ${badge.options.order}`)
   const badgeTree = applied.react.render(badge.Component, slotProps(applied, data, { sessionId: 'child' })).tree
   assert.deepEqual(textsOf(badgeTree), ['DeepSeek-V4.1-Flash', 'high'])
   assert.equal(applied.react.render(badge.Component, slotProps(applied, data, { sessionId: 'w1-b' })).tree, null)
