@@ -1594,6 +1594,13 @@ window.__ModuleLoader__.load({
 
     /** Pause between the latest keystroke and a host content-search request. */
     const SEARCH_DEBOUNCE_MS = 250
+    // A content search still pending after this long is reported as slow (the
+    // index may be building on first use); local title matches stay visible and
+    // the request keeps running, so its results still land when they arrive.
+    const SEARCH_SLOW_MS = 6000
+    // A disabled index is re-probed after this long instead of never again, so
+    // enabling the session-search bundle takes effect without a reload.
+    const CONTENT_SEARCH_RETRY_MS = 60000
     /**
      * The pinned block's reorder scope. The block spans workspaces, so it is not an
      * account; its order comes from the registry's pin set, which is written by
@@ -2048,6 +2055,7 @@ window.__ModuleLoader__.load({
       'search.more': '结果较多，请细化查询',
       'search.failed': '搜索失败：',
       'search.local': '内容搜索未开启，仅匹配标题与工作区',
+      'search.slow': '内容索引仍在准备，先显示标题与工作区匹配',
       'status.approval': '等待批准',
       'status.planReview': '等待计划确认',
       'status.question': '等待回答',
@@ -2180,6 +2188,7 @@ window.__ModuleLoader__.load({
       'search.more': 'More results — refine your query',
       'search.failed': 'Search failed: ',
       'search.local': 'Content search is off — matching titles and workspaces only',
+      'search.slow': 'Content index is still warming up — showing title and workspace matches first',
       'status.approval': 'Waiting for approval',
       'status.planReview': 'Waiting for plan review',
       'status.question': 'Waiting for an answer',
@@ -3440,7 +3449,7 @@ window.__ModuleLoader__.load({
       // base bundle mounts the index with `openAt: 'never'`, where every call
       // rejects. Once that rejection is seen the region stops asking and keeps
       // matching titles and workspace names locally, so no error paints over them.
-      const [contentSearchOff, setContentSearchOff] = useState(false)
+      const [contentSearchOffAt, setContentSearchOffAt] = useState(0)
 
       // One superseded request per keystroke: the previous controller is aborted
       // before the next timer fires, and a blank query never reaches the host.
@@ -3450,27 +3459,36 @@ window.__ModuleLoader__.load({
           setSearch({ phase: 'idle', items: [], hasMore: false })
           return undefined
         }
-        if (contentSearchOff) {
+        if (contentSearchOffAt > 0 && Date.now() - contentSearchOffAt < CONTENT_SEARCH_RETRY_MS) {
           setSearch({ phase: 'local', items: [], hasMore: false })
           return undefined
         }
         const controller = new AbortController()
+        let slowTimer = 0
         const timer = window.setTimeout(() => {
           setSearch(current => ({ ...current, phase: 'loading' }))
+          slowTimer = window.setTimeout(() => {
+            if (!controller.signal.aborted) setSearch(current => (current.phase === 'loading' ? { ...current, phase: 'slow' } : current))
+          }, SEARCH_SLOW_MS)
           Promise.resolve(searchSessions(clean, controller.signal))
-            .then(result => setSearch({ phase: 'ready', items: result?.items ?? [], hasMore: result?.hasMore === true }))
+            .then(result => {
+              if (controller.signal.aborted) return
+              setContentSearchOffAt(0)
+              setSearch({ phase: 'ready', items: result?.items ?? [], hasMore: result?.hasMore === true })
+            })
             .catch(error => {
               if (controller.signal.aborted) return
               if (contentSearchDisabled(error)) {
-                setContentSearchOff(true)
+                setContentSearchOffAt(Date.now())
                 setSearch({ phase: 'local', items: [], hasMore: false })
                 return
               }
               setSearch({ phase: 'error', items: [], hasMore: false, message: String(error?.message ?? error) })
             })
+            .finally(() => { window.clearTimeout(slowTimer) })
         }, SEARCH_DEBOUNCE_MS)
-        return () => { window.clearTimeout(timer); controller.abort() }
-      }, [contentSearchOff, query, searchSessions])
+        return () => { window.clearTimeout(timer); window.clearTimeout(slowTimer); controller.abort() }
+      }, [contentSearchOffAt, query, searchSessions])
 
       // The box being open and a query being active are different states: open with
       // an empty box still shows the list, and only a non-blank query searches.
@@ -4345,7 +4363,8 @@ window.__ModuleLoader__.load({
             search.phase === 'error' ? h('div', { className: 'dsm-search-meta' }, `${t('search.failed')}${search.message ?? ''}`) : null,
             search.phase === 'local' ? h('div', { className: 'dsm-search-meta' }, t('search.local')) : null,
             search.phase === 'loading' ? h('div', { className: 'dsm-search-meta' }, t('search.loading')) : null,
-            results.nodes.length === 0 && search.phase !== 'loading'
+            search.phase === 'slow' ? h('div', { className: 'dsm-search-meta' }, t('search.slow')) : null,
+            results.nodes.length === 0 && search.phase !== 'loading' && search.phase !== 'slow'
               ? h('div', { className: 'dsm-empty' }, t('search.none'))
               : null,
             results.nodes.map(node => {
@@ -4805,7 +4824,13 @@ window.__ModuleLoader__.load({
               () => ctx.workspaces.insertBefore(workspaceId, beforeWorkspaceId),
             ),
             searchSessions: (query, signal) => Promise.resolve(ctx.sessions.search(query, signal)).then((result) => {
-              if (result?.ok === false) throw new Error(result.error?.message || 'session search failed')
+              if (result?.ok === false) {
+                // Keep the host's code: the disabled-index check reads it, and a
+                // message-only error would hide a rename of the wording.
+                const failure = new Error(result.error?.message || 'session search failed')
+                if (result.error?.code !== undefined) failure.code = result.error.code
+                throw failure
+              }
               return result.value
             }),
             searchResultLimit: ctx.sessions.searchResultLimit,

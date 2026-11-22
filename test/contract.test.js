@@ -211,6 +211,7 @@ function applyPlugin({ withJobs = true } = {}) {
   const registrations = []
   let pickResult = '/tmp/picked'
   let searchResult = { items: [], hasMore: false }
+  let searchReply = null
   const jobs = fixtures().jobs
   // The Host materializes a session's job roster only while some surface watches
   // it, so the fake records every open stream the way the real service does:
@@ -265,7 +266,7 @@ function applyPlugin({ withJobs = true } = {}) {
       searchResultLimit: 5,
       search: (query) => {
         calls.push(['search', query])
-        return Promise.resolve({ ok: true, value: searchResult })
+        return Promise.resolve(searchReply ?? { ok: true, value: searchResult })
       },
       using: (id, options, run) => {
         calls.push(['sessions.using', id, options.source])
@@ -285,6 +286,7 @@ function applyPlugin({ withJobs = true } = {}) {
     calls, clipboardWrites, effects, registered, registrations, injected, exports, react, styleEl, documentListeners, windowListeners, watched,
     setPickResult(result) { pickResult = result },
     setSearchResult(result) { searchResult = result },
+    setSearchReply(reply) { searchReply = reply },
   }
 }
 
@@ -478,6 +480,29 @@ test('a row names its owning workspace on hover, grouped and pinned rows include
   // The pinned block spans workspaces: nothing but the tooltip can name the owner.
   assert.deepEqual(tooltips.get('pinned').split('\n').slice(0, 2), ['Pinned one', 'alpha'])
   assert.deepEqual(tooltips.get('w2-a').split('\n').slice(0, 2), ['Gamma', 'beta'])
+})
+
+test('a refused content search keeps the host error code', async () => {
+  const applied = applyPlugin()
+  // The host reports a disabled index by code; the wording is not contract.
+  applied.setSearchReply({ ok: false, error: { code: 'SESSION_QUERY_SEARCH_DISABLED', message: 'index unavailable' } })
+  await assert.rejects(applied.injected.searchSessions('alpha'), (error) => {
+    assert.equal(error.code, 'SESSION_QUERY_SEARCH_DISABLED')
+    assert.equal(error.message, 'index unavailable')
+    return true
+  })
+  applied.setSearchReply({ ok: false, error: { message: 'boom' } })
+  await assert.rejects(applied.injected.searchSessions('alpha'), (error) => error.code === undefined && error.message === 'boom')
+})
+
+test('a slow or disabled content index degrades to local matches without latching', () => {
+  const code = bundle
+  // Slow: still-pending searches are reported, local matches stay, the request keeps running.
+  assert.match(code, /phase: 'slow'/)
+  assert.match(code, /search\.phase === 'slow' \? h\('div', \{ className: 'dsm-search-meta' \}, t\('search\.slow'\)\)/)
+  // Disabled: the index is re-probed after a cooldown instead of never again.
+  assert.match(code, /Date\.now\(\) - contentSearchOffAt < CONTENT_SEARCH_RETRY_MS/)
+  assert.doesNotMatch(code, /setContentSearchOff\(true\)/)
 })
 
 test('a workspace row reads like the shipped one: folder seat, chevron, path tooltip', () => {
