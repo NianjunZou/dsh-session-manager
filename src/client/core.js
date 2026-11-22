@@ -1361,11 +1361,42 @@ export function subagentEntries(list, children, parentId) {
     return {
       id,
       label,
+      ...(typeof entry?.name === 'string' && entry.name !== '' ? { name: entry.name } : {}),
       ...(typeof entry?.mode === 'string' ? { mode: entry.mode } : {}),
       running: row?.running === true,
       ...(model === undefined ? {} : { model }),
     }
   })
+}
+
+/**
+ * Every subagent under the root of `sessionId`'s lineage, depth-first in
+ * catalog order, so a view of one family reads the same from the root and
+ * from any child.
+ *
+ * @param {any} list - `sessions.list` snapshot.
+ * @param {string} sessionId - any session of the family.
+ * @returns {Array<object>} {@link subagentEntries} rows plus `depth` (1 = direct child).
+ */
+export function lineageSubagents(list, sessionId) {
+  const children = buildChildren(list)
+  const parentOf = new Map()
+  for (const [parent, ids] of children) for (const id of ids) if (!parentOf.has(id)) parentOf.set(id, parent)
+  let root = sessionId
+  for (let hops = 0; parentOf.has(root) && hops < MAX_DEPTH; hops += 1) root = parentOf.get(root)
+  const out = []
+  const seen = new Set([root])
+  const walk = (parentId, depth) => {
+    if (depth > MAX_DEPTH) return
+    for (const entry of subagentEntries(list, children, parentId)) {
+      if (seen.has(entry.id)) continue
+      seen.add(entry.id)
+      out.push({ ...entry, depth })
+      walk(entry.id, depth + 1)
+    }
+  }
+  walk(root, 1)
+  return out
 }
 
 /**

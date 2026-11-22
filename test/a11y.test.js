@@ -75,3 +75,8 @@ test('a subagent chip is a labelled toggle and its list is a keyboard-operable g
   assert.match(code, /className: 'dsm-subs-list', role: 'group', 'aria-label': t\('subagents\.list'\)/)
   assert.match(code, /className: 'dsm-sub',\s+role: 'treeitem',\s+tabIndex: 0/)
 })
+
+test('the lineage footer is a labelled group under the native subagent dropdown', () => {
+  assert.match(code, /name: 'conversation\.session\.header\.actions\.subagent\.footer',\s+id: 'dsh-session-manager-lineage-models'/)
+  assert.match(code, /className: 'dsm-lineage-models', role: 'group', 'aria-label': t\('lineage\.models'\)/)
+})

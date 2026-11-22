@@ -47,6 +47,7 @@ import {
   modelSelectionOf,
   modelText,
   subagentEntries,
+  lineageSubagents,
   buildRollup,
   computeGroups,
   descendantsOf,
@@ -1057,4 +1058,29 @@ test('subagentEntries names each child from the catalog and carries its model an
     { id: 'k2', label: 'checker', mode: 'fork', running: false },
   ])
   assert.deepEqual(subagentEntries(list, children, 'k1'), [])
+})
+
+test('lineageSubagents lists the whole family from the root, whichever member asks', () => {
+  const sel = (model, effort) => ({ modelSelection: { lastUsed: { provider: 'p', model, ...(effort ? { reasoningEffort: effort } : {}) } } })
+  const list = {
+    byId: {
+      root: { id: 'root' },
+      a: { id: 'a', parentId: 'root', projectionValues: sel('m-a', 'high') },
+      b: { id: 'b', parentId: 'root', projectionValues: sel('m-b') },
+      a1: { id: 'a1', parentId: 'a', running: true, projectionValues: sel('m-a1', 'low') },
+    },
+    projectionsBySession: {
+      root: { values: { subagentCatalog: [{ id: 'a', label: 'stage a', name: 'stage-a', mode: 'continuable' }, { id: 'b', label: 'stage b', mode: 'one-shot' }] } },
+      a: { values: { subagentCatalog: [{ id: 'a1', label: 'deep', mode: 'one-shot' }] } },
+    },
+  }
+  const shape = rows => rows.map(r => [r.id, r.depth, r.label, r.name, r.model?.model, r.model?.effort])
+  const expected = [
+    ['a', 1, 'stage a', 'stage-a', 'm-a', 'high'],
+    ['a1', 2, 'deep', undefined, 'm-a1', 'low'],
+    ['b', 1, 'stage b', undefined, 'm-b', undefined],
+  ]
+  assert.deepEqual(shape(lineageSubagents(list, 'root')), expected)
+  assert.deepEqual(shape(lineageSubagents(list, 'a1')), expected, 'a child sees the same family')
+  assert.deepEqual(lineageSubagents({ byId: { solo: { id: 'solo' } } }, 'solo'), [])
 })

@@ -530,6 +530,7 @@ const zh = {
   'subagents.modelUnknown': '模型未知',
   'subagents.running': '执行中',
   'hover.model': '模型：{model}',
+  'lineage.models': '子会话模型与思考强度',
   'status.subagentJobs': '{n} 个子会话的后台任务执行中',
   'status.jobs': '{n} 个本会话的后台任务执行中',
   'status.unread': '已完成，未读',
@@ -668,6 +669,7 @@ const en = {
   'subagents.modelUnknown': 'model unknown',
   'subagents.running': 'running',
   'hover.model': 'Model: {model}',
+  'lineage.models': 'Subagent models and reasoning effort',
   'status.subagentJobs': '{n} background job(s) from subagents',
   'status.jobs': '{n} background job(s) of this session',
   'status.unread': 'Finished, unread',
@@ -958,6 +960,12 @@ const css = `
 .dsm-sub[data-running="true"] .dsm-sub-dot{background:var(--dsw-alias-state-business-primary)}
 .dsm-sub-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsm-sub-model{flex:none;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
+.dsm-lineage-models{display:flex;flex-direction:column;gap:1px;margin:4px 0 0;padding:6px 8px 4px;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsm-lineage-head{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);margin-bottom:2px}
+.dsm-lineage-row{display:flex;align-items:baseline;gap:8px;min-width:0;font-size:12px;line-height:18px}
+.dsm-lineage-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
+.dsm-lineage-model{flex:none;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
+.dsm-lineage-row[data-unknown="true"] .dsm-lineage-model{color:var(--dsw-alias-label-tertiary)}
 .dsm-time{flex:0 0 4.5em;width:4.5em;margin-left:6px;text-align:right;white-space:nowrap;font-size:10px;line-height:16px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}
 .dsm-action{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:24px;height:20px;flex:0 0 24px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);opacity:0;cursor:pointer;font:inherit;font-size:13px}
 /* Hover hands the trailing cell to the actions, exactly like the shipped rows:
@@ -1758,6 +1766,36 @@ function FolderDialog({ request, folders, reserved, onSubmit, onCancel, t }) {
  * @param {object} props - owner share, injected takeover store and copy.
  * @returns {object} the toggle.
  */
+/**
+ * Footer of the native subagent lineage dropdown: the same children it lists,
+ * each with `model · effort`, which the dropdown rows do not show. The Host
+ * offers no per-row slot there, so the models sit in one block below the tree
+ * in the tree's own order.
+ *
+ * @param {object} props - session-scoped slot props (`sessionId`, `useSessions`, `t`).
+ * @returns {object|null} the block, or nothing for a session without subagents.
+ */
+function LineageModelFooter({ sessionId, useSessions, t }) {
+  const list = useSessions(snapshot => snapshot)
+  const rows = useMemo(() => (typeof sessionId === 'string' ? lineageSubagents(list, sessionId) : []), [list, sessionId])
+  if (rows.length === 0) return null
+  return h('div', { className: 'dsm-lineage-models', role: 'group', 'aria-label': t('lineage.models') },
+    h('div', { className: 'dsm-lineage-head', 'aria-hidden': 'true' }, t('lineage.models')),
+    rows.map((row) => {
+      const model = modelText(row.model)
+      const label = row.name ? `${row.label} · ${row.name}` : row.label
+      return h('div', {
+        key: row.id,
+        className: 'dsm-lineage-row',
+        'data-unknown': String(model === ''),
+        'data-dsm-subagent': row.id,
+        title: [label, model ? t('hover.model', { model }) : t('subagents.modelUnknown')].join('\n'),
+      },
+      h('span', { className: 'dsm-lineage-label', style: row.depth > 1 ? { paddingLeft: `${(row.depth - 1) * 12}px` } : undefined }, row.label),
+      h('span', { className: 'dsm-lineage-model' }, model || t('subagents.modelUnknown')))
+    }))
+}
+
 function TakeoverFooterAction({ takeover, setTakeover, t }) {
   const snapshot = useSyncExternalStore(takeover.subscribe, takeover.getSnapshot)
   const active = readTakeover(snapshot) === 'on'
@@ -3461,6 +3499,23 @@ function apply(ctx) {
       return undefined
     }
   }, 'dsh-session-manager: takeover toggle')
+
+  // Model and effort under the native subagent dropdown. It does not depend on
+  // the takeover state: the dropdown is the Host's, not the region's.
+  ctx.effect(() => {
+    try {
+      return ctx.slots.inject('conversation.session.header.actions.subagent.footer', () => ctx.slots.register({
+        name: 'conversation.session.header.actions.subagent.footer',
+        id: 'dsh-session-manager-lineage-models',
+        order: 100,
+        locale: NS,
+        registrant: '@pianner/dsh-session-manager',
+      }, LineageModelFooter))
+    } catch (error) {
+      console.warn('[dsh-session-manager] subagent footer unavailable', error)
+      return undefined
+    }
+  }, 'dsh-session-manager: subagent models')
 }
 
 module.exports = { inject, apply }
