@@ -1125,6 +1125,10 @@ test('a route suffix is learned from the ids, never from a vendor list', () => {
   // A capitalised shared segment is part of the name, not a tag.
   assert.equal(sharedRouteSuffix(['DeepSeek-V4.1-Flash-acme-relay', 'GLM-5.3-Flash-acme-relay']), '-acme-relay')
   assert.equal(sharedRouteSuffix(['A-Flash', 'B-Flash']), '')
+  // Other providers' ids without the tag do not hide it.
+  assert.equal(sharedRouteSuffix(['DeepSeek-V4.1-Flash-acme-relay', 'Opus 5.5-acme-relay', 'gpt-5.6-luna', 'deepseek-v4-flash']), '-acme-relay')
+  // A single shared lowercase segment is too weak to call a tag.
+  assert.equal(sharedRouteSuffix(['gpt-5.6-luna', 'gpt-5.5-luna']), '')
   // One id says nothing about what is shared.
   assert.equal(sharedRouteSuffix(['DeepSeek-V4.1-Flash-acme-relay']), '')
   assert.equal(sharedRouteSuffix(['deepseek-v4-flash', 'deepseek-v4-pro']), '')

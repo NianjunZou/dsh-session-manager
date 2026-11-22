@@ -1350,27 +1350,33 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The route suffix every known model id shares, learned from the ids
-     * themselves rather than from a list of vendors: when at least two distinct
-     * ids end in the same run of lowercase `-segment`s, that run is a gateway
-     * tag (repeated on every row) rather than part of a model name. Capitalised
-     * or mixed segments stop the run, so `-Flash` is never taken for a tag.
+     * The gateway route tag on model ids, learned from the ids themselves rather
+     * than from a list of vendors: the longest run of trailing lowercase
+     * `-segment`s (at least two segments) that at least two distinct ids end in.
+     * Ids without it (another provider's models) do not prevent it, and a
+     * capitalised segment such as `-Flash` is never part of it.
      *
      * @param {Iterable<string>} models - model ids in view.
-     * @returns {string} the shared suffix including its leading `-`, or ''.
+     * @returns {string} the tag including its leading `-`, or ''.
      */
     function sharedRouteSuffix(models) {
       const ids = [...new Set([...(models || [])].filter(id => typeof id === 'string' && id !== ''))]
-      if (ids.length < 2) return ''
-      const split = ids.map(id => id.split('-'))
-      const tail = []
-      for (let back = 1; ; back += 1) {
-        const segments = split.map(parts => (parts.length > back ? parts[parts.length - back] : undefined))
-        const first = segments[0]
-        if (first === undefined || !/^[a-z0-9]+$/.test(first) || segments.some(segment => segment !== first)) break
-        tail.unshift(first)
+      const counts = new Map()
+      for (const id of ids) {
+        const parts = id.split('-')
+        const tail = []
+        // parts[0] is the model name's head; a tag never consumes the whole id.
+        for (let at = parts.length - 1; at >= 1 && /^[a-z0-9]+$/.test(parts[at]); at -= 1) {
+          tail.unshift(parts[at])
+          if (tail.length >= 2) {
+            const key = `-${tail.join('-')}`
+            counts.set(key, (counts.get(key) ?? 0) + 1)
+          }
+        }
       }
-      return tail.length === 0 ? '' : `-${tail.join('-')}`
+      let best = ''
+      for (const [key, count] of counts) if (count >= 2 && key.length > best.length) best = key
+      return best
     }
 
     /**
